@@ -7,6 +7,14 @@
 
 ---
 
+## Schematics
+
+![RN2483 LoRa Module Schematic](../../images/pcb/COMS/RN2483_MODULE.png)
+
+![OLED Schematic](../../images/pcb/COMS/OLED.png)
+
+---
+
 ## RN2483 LoRa Module (DrAzzy Breakout Rev.C)
 
 ### Component

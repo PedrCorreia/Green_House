@@ -7,6 +7,12 @@
 
 ---
 
+## Schematic
+
+![MCU Schematic](../../images/pcb/MCU/MCU.png)
+
+---
+
 ## Component
 
 | Parameter | Value |

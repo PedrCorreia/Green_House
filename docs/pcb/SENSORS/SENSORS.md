@@ -7,6 +7,13 @@
 
 ---
 
+## Schematics
+
+![Temperature and Humidity Schematic](../../images/pcb/SENSORS/TH.png)
+
+
+---
+
 ## DHT22 — Temperature and Humidity Sensor
 
 ### Component
@@ -25,7 +32,7 @@
 | Net label | TH |
 | Last Modified | 03/04/2026 |
 
-**Datasheet:** _Insert link here_
+**Datasheet:** (https://www.mouser.com/datasheet/2/737/dht-932870.pdf)
 
 ### Schematic Components
 | Ref | Value | Footprint | Purpose |
@@ -52,6 +59,7 @@
 ---
 
 ## Capacitive Soil Moisture Sensor v1.2
+![Soil Moisture Schematic](../../images/pcb/SENSORS/SOIL.png)
 
 ### Component
 | Parameter | Value |
@@ -65,7 +73,7 @@
 | Net label | SOIL_MOIST |
 | Last Modified | 07/04/2026 |
 
-**Datasheet:** _Insert link here_
+**Datasheet:** (https://www.datocms-assets.com/28969/1662716326-hw-101-hw-moisture-sensor-v1-0.pdf)
 
 ### PCB Connector — J_SOIL
 | Pin | Net | Notes |
@@ -94,6 +102,7 @@ Low-pass RC filter on AOUT line (10kΩ + 100nF) to reduce high-frequency noise b
 ---
 
 ## Water Leakage Sensor
+![Water Leakage Schematic](../../images/pcb/SENSORS/WATER.png)
 
 ### Component
 | Parameter | Value |
@@ -106,7 +115,7 @@ Low-pass RC filter on AOUT line (10kΩ + 100nF) to reduce high-frequency noise b
 | Net label | WATER_LEAK |
 | Last Modified | 06/04/2026 |
 
-**Datasheet:** _Insert link here_
+**Datasheet:** (https://www.datasheethub.com/wp-content/uploads/2022/10/42240.pdf)
 
 ### PCB Connector — J_WATER
 | Pin | Net | Notes |
@@ -131,6 +140,7 @@ J_WATER: Connector_PinHeader_2.54mm:PinSocket_1x03_P2.54mm_Vertical
 
 ## Light Intensity Sensor (BH1750)
 
+![Light Intensity Schematic](../../images/pcb/SENSORS/LIGHT.png)
 ### Component
 | Parameter | Value |
 |---|---|
@@ -144,7 +154,7 @@ J_WATER: Connector_PinHeader_2.54mm:PinSocket_1x03_P2.54mm_Vertical
 | Net labels | I2C_SDA, I2C_SCL |
 | Last Modified | 06/04/2026 |
 
-**Datasheet:** _Insert link here_
+**Datasheet:** (https://www.mouser.com/datasheet/2/348/bh1750fvi-e-186247.pdf)
 
 ### PCB Connector — J_LIGHT
 | Pin | Net | Notes |

@@ -7,6 +7,12 @@
 
 ---
 
+## Schematic
+
+![Power Management Schematic](../../images/pcb/POWER/Power%20Management.png)
+
+---
+
 ## Design Overview
 
 LiPo battery input with P-channel MOSFET reverse polarity protection feeding an LDO regulator producing a clean 3.3V rail for all system components.
@@ -43,7 +49,7 @@ LiPo (3.7–4.2V) → J1 → Q1 (protection) → C3/C2 → U1 (LDO) → C1/C4 �
 | Rds(on) | 45mΩ typical |
 | Last Modified | 03/04/2026 |
 
-**Datasheet:** _Insert link here_
+**Datasheet:** (https://octopart.com/datasheet/alpha-omega-semiconductor/AO3401A)
 
 **Pin connections:**
 | Pin | Net | Notes |
@@ -84,7 +90,7 @@ Gate pulled to GND via R1 → Vgs = 0 - Vbat = negative → MOSFET ON → curren
 | EN pin | Tied to VIN (always on) |
 | Last Modified | 03/04/2026 |
 
-**Datasheet:** _Insert link here_
+**Datasheet:** (https://www.bing.com/search?qs=LT&pq=AP2112K-3.3+datashee&sk=CSYN1&sc=2-20&q=ap2112k-3.3+datasheet&cvid=18bfe72665df491fb46917099448cfc6&gs_lcrp=EgRlZGdlKgYIABAAGEAyBggAEAAYQNIBCDQ0NTJqMGo0qAIAsAIA&FORM=ANAB01&PC=U531)
 
 **Current budget:**
 | Consumer | Typical | Peak |
