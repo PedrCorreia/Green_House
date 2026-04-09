@@ -1,0 +1,30 @@
+# KiCad
+*.bak
+*.kicad_pcb-bak
+*.kicad_sch-bak
+*.bck
+_autosave-*
+fp-info-cache
+*.net
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.env
+venv/
+
+# Node
+node_modules/
+npm-debug.log
+yarn-error.log
+
+# VS Code
+.vscode/
+
+# macOS
+.DS_Store
+
+# Windows
+Thumbs.db
+desktop.ini
