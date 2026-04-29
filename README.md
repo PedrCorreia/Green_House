@@ -9,7 +9,7 @@ The IoT Greenhouse Monitor is a professional embedded systems solution designed 
 |---|---|
 | Microcontroller | ESP32 DevKit V1 |
 | Communications | RN2483 LoRaWAN Module |
-| Sensors | DHT22, Capacitive Soil Moisture, Water Leakage, BH1750 |
+| Sensors | DHT22, Capacitive Soil Moisture, Water Leakage, KY-018 Photoresistor |
 | Power Management| AP2112K-3.3 LDO, AO3401A MOSFET |
 | PCB Design | KiCad 10.0.0 |
 | Firmware | C/C++ |
@@ -32,6 +32,10 @@ iot-greenhouse/
 │       │   └── COMS.md
 │       └── SENSORS/
 │           └── SENSORS.md
+├── pre-integration/
+│   ├── Coms/
+│   ├── Others/
+│   └── Sensors/
 ├── src/
 │   └── README.md
 └── ui/

@@ -53,10 +53,10 @@
 | 1 | EN | NC | Reset — leave floating |
 | 2 | GPIO36 | NC | Input only |
 | 3 | GPIO39 | NC | Input only |
-| 4 | GPIO34 | NC | Input only |
-| 5 | GPIO35 | NC | Input only |
+| 4 | GPIO34 | LIGHT_SENS | ADC1_CH6 — KY-018 photoresistor analog |
+| 5 | GPIO35 | WATER_LEAK | ADC1_CH7 — water leakage digital |
 | 6 | GPIO32 | SOIL_MOIST | ADC1_CH4 — soil moisture analog |
-| 7 | GPIO33 | WATER_LEAK | ADC1_CH5 — water leakage digital |
+| 7 | GPIO33 | NC | Input only |
 | 8 | GPIO25 | LED_CTRL | DAC1 — LED control PWM |
 | 9 | GPIO26 | NC | |
 | 10 | GPIO27 | NC | |
@@ -71,10 +71,10 @@
 | Physical Pin | GPIO | Net Label | Function |
 |---|---|---|---|
 | 1 | GPIO23 | NC | |
-| 2 | GPIO22 | I2C_SCL | I2C clock — OLED + BH1750 |
+| 2 | GPIO22 | I2C_SCL | I2C clock — OLED |
 | 3 | GPIO1/TX0 | NC | ⚠️ USB serial TX |
 | 4 | GPIO3/RX0 | NC | ⚠️ USB serial RX |
-| 5 | GPIO21 | I2C_SDA | I2C data — OLED + BH1750 |
+| 5 | GPIO21 | I2C_SDA | I2C data — OLED |
 | 6 | GND | GND | |
 | 7 | GPIO19 | NC | |
 | 8 | GPIO18 | NC | |
@@ -96,13 +96,14 @@
 | LORA_RX | GPIO16 | UART2 RX | RN2483 TX |
 | LORA_TX | GPIO17 | UART2 TX | RN2483 RX |
 | LORA_RST | GPIO14 | Digital OUT | RN2483 RST |
-| I2C_SDA | GPIO21 | I2C | OLED + BH1750 |
-| I2C_SCL | GPIO22 | I2C | OLED + BH1750 |
+| I2C_SDA | GPIO21 | I2C | OLED |
+| I2C_SCL | GPIO22 | I2C | OLED |
 | LED_CTRL | GPIO25 | PWM/Digital | LED module |
-| WATER_LEAK | GPIO33 | Digital IN | Water sensor DO |
+| WATER_LEAK | GPIO35 | Digital IN | Water sensor DO |
+| LIGHT_SENS | GPIO34 | ADC1 | KY-018 photoresistor |
 | SOIL_MOIST | GPIO32 | ADC1 | Soil moisture AOUT |
 
-**GPIOs used: 9 / Free: 6**
+**GPIOs used: 10 / Free: 5**
 
 ---
 

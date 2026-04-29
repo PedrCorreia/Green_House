@@ -111,7 +111,7 @@ Low-pass RC filter on AOUT line (10kΩ + 100nF) to reduce high-frequency noise b
 | Output | Digital (DO) |
 | Supply voltage | 3.3–5V |
 | Connector | 2.54mm 3-pin |
-| ESP32 pin | GPIO33 (ADC1_CH5) |
+| ESP32 pin | GPIO35 (ADC1_CH7) |
 | Net label | WATER_LEAK |
 | Last Modified | 06/04/2026 |
 
@@ -122,7 +122,7 @@ Low-pass RC filter on AOUT line (10kΩ + 100nF) to reduce high-frequency noise b
 |---|---|---|
 | 1 | +3V3 | |
 | 2 | GND | |
-| 3 | WATER_LEAK | DO → GPIO33 |
+| 3 | WATER_LEAK | DO → GPIO35 |
 
 **Footprint:**
 ```
@@ -138,46 +138,41 @@ J_WATER: Connector_PinHeader_2.54mm:PinSocket_1x03_P2.54mm_Vertical
 
 ---
 
-## Light Intensity Sensor (BH1750)
+## Light Intensity Sensor (KY-018 Photoresistor)
 
 ![Light Intensity Schematic](../../images/pcb/SENSORS/LIGHT.png)
 ### Component
 | Parameter | Value |
 |---|---|
-| Part | BH1750 |
-| Protocol | I2C |
-| I2C address | 0x23 (default) |
-| Measurement range | 1–65535 lux |
-| Supply voltage | 3.3V |
-| Supply current | 0.12mA |
-| ESP32 pins | GPIO21 (SDA), GPIO22 (SCL) |
-| Net labels | I2C_SDA, I2C_SCL |
-| Last Modified | 06/04/2026 |
+| Part | KY-018 Photoresistor Module |
+| Protocol | Analog Output |
+| Supply voltage | 3.3–5V |
+| ESP32 pin | GPIO34 (ADC1_CH6) |
+| Net label | LIGHT_SENS |
+| Last Modified | 09/04/2026 |
 
-**Datasheet:** (https://www.mouser.com/datasheet/2/348/bh1750fvi-e-186247.pdf)
+**Datasheet:** N/A (Standard LDR voltage divider module)
 
 ### PCB Connector — J_LIGHT
 | Pin | Net | Notes |
 |---|---|---|
 | 1 | +3V3 | |
 | 2 | GND | |
-| 3 | I2C_SDA | Shared with OLED |
-| 4 | I2C_SCL | Shared with OLED |
+| 3 | LIGHT_SENS | Analog DO → GPIO34 |
 
 **Footprint:**
 ```
-J_LIGHT: Connector_PinHeader_2.54mm:PinSocket_1x04_P2.54mm_Vertical
+J_LIGHT: Connector_PinHeader_2.54mm:PinSocket_1x03_P2.54mm_Vertical
 ```
 
-### I2C Notes
-- BH1750 address 0x23 — no conflict with OLED SSD1306 at 0x3C 
-- I2C pullups handled by OLED module (4.7kΩ already on bus)
-- If cable longer than 30cm — consider stronger pullups (2.2kΩ)
+### Analog Output Notes
+- Measured using ADC to determine light range
+- The KY-018 contains a fixed resistor acting as a voltage divider with the LDR
+- Reads 0-4095 on the ESP32 (depending on brightness and 3V3 scaling)
 
 ### Physical Notes
 - Connected via cable running **outside** 3D enclosure
-- Sensor mounted facing upward for accurate ambient lux measurement
-- Cable should not exceed 30cm for reliable I2C
+- Sensor mounted facing upward for accurate ambient sunlight representation
 
 ---
 

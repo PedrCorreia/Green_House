@@ -102,7 +102,6 @@ J3: Connector_PinHeader_2.54mm:PinSocket_1x14_P2.54mm_Vertical
 | Device | Address | Conflict? |
 |---|---|---|
 | SSD1306 OLED | 0x3C | — |
-| BH1750 Light sensor | 0x23 | ✅ No conflict |
 
 ### Decoupling
 | Ref | Value | Placement |

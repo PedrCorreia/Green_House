@@ -69,10 +69,11 @@ U1 AP2112K-3.3 (LDO 3.3V 600mA)
 | LORA_RX | ESP32 GPIO16 | J2 pin1 |
 | LORA_TX | ESP32 GPIO17 | J2 pin2 |
 | LORA_RST | ESP32 GPIO14 | J2 pin4 |
-| I2C_SDA | ESP32 GPIO21 | U3 OLED SDA, J_LIGHT pin3 |
-| I2C_SCL | ESP32 GPIO22 | U3 OLED SCL, J_LIGHT pin4 |
+| I2C_SDA | ESP32 GPIO21 | U3 OLED SDA |
+| I2C_SCL | ESP32 GPIO22 | U3 OLED SCL |
 | SOIL_MOIST | ESP32 GPIO32 | J_SOIL pin1 |
-| WATER_LEAK | ESP32 GPIO33 | J_WATER pin3 |
+| WATER_LEAK | ESP32 GPIO35 | J_WATER pin3 |
+| LIGHT_SENS | ESP32 GPIO34 | J_LIGHT pin3 |
 | LED_CTRL | ESP32 GPIO25 | LED connector |
 
 ---
@@ -99,7 +100,7 @@ U1 AP2112K-3.3 (LDO 3.3V 600mA)
 | J3 | Conn_01x14_Socket | PinSocket 2.54mm | LoRa GPIO (mechanical) |
 | J_SOIL | Conn_01x03_Socket | JST PH 2.0mm | Soil moisture sensor |
 | J_WATER | Conn_01x03_Socket | PinSocket 2.54mm | Water leakage sensor |
-| J_LIGHT | Conn_01x04_Socket | PinSocket 2.54mm | BH1750 light sensor |
+| J_LIGHT | Conn_01x03_Socket | PinSocket 2.54mm | KY-018 photoresistor |
 
 ---
 
