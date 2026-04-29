@@ -1,0 +1,32 @@
+# Sensor Integration Notes
+
+## Overview
+These two files deal with reading environmental data from various sensors connected to an ESP32. They both read the sensors, process the values, and package them into a 10-byte data array so they can eventually be transmitted  via LoRa.
+
+The sensors used are:
+* **Temperature & Humidity** (DHT22)
+* **Soil Moisture** (Capacitive sensor)
+* **Light Intensity** (KY-018 Photoresistor)
+* **Water Leakage** (HW-038 sensor)
+
+## What Was Done
+
+### 1. `sensors.ino` (Continuous Reading)
+* **How it works:** This file is set up for continuous monitoring. 
+* **Methods implemented:** 
+  * `setup()`: Initializes the sensors, serial communication, and sets up the first byte of the data packet.
+  * `loop()`: Continuously reads data from each sensor one by one (with 1-second delays in between), applies some basic math to convert raw signals into usable percentages and lux values, and stores them in the `packet_data` array. It then prints the final packet to the console and waits 12 seconds before repeating.
+
+### 2. `sensors_with_sleep.ino` (Power Saving)
+* **How it works:** This version does the exact same readings but is optimized for battery life by using the ESP32's deep sleep feature.
+* **Methods implemented:**
+  * `setup()`: Contains **all** of the reading and data packaging logic. Once it gets the readings and builds the packet, it sets a timer and puts the board into a deep sleep for 20 seconds using `esp_deep_sleep_start()`.
+  * `loop()`: Kept completely empty because the board sleeps and resets instead of looping normally.
+
+---
+
+## Feedback / Personal Notes
+
+*(Add your notes, tasks, or comments here)*
+
+* 

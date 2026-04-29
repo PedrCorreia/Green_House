@@ -1,0 +1,22 @@
+# Light Control Integration Notes
+
+## Overview
+This file handles receiving commands to turn a light (currently simulated by an external LED) on or off, and then sends back an acknowledgment (ACK) packet to confirm the action was executed.
+
+## What Was Done
+The code establishes a basic structure for receiving 2-byte commands from a gateway, checking their validity, executing the physical pin change, and replying with a 2-byte status update. Currently, it uses simulated payloads in the main loop to test the logic until the real LoRa communication layer is added.
+
+### Methods Implemented
+* `setLed(bool on)`: Turns the physical LED pin HIGH or LOW based on the command received.
+* `makeAck(uint8_t result)`: Prepares the 2-byte ACK packet (`0x03` for the ACK packet type, followed by `0x01` for success or `0x00` for fail).
+* `sendAck()`: Currently just prints the prepared ACK packet to the Serial monitor for debugging. This is a placeholder for the actual LoRa send function.
+* `handleCmd(uint8_t cmd[2])`: Reads the incoming 2-byte command. If it's a valid light command (`0x01` for ON, `0x00` for OFF), it updates the LED and sends a success ACK. If it's an unrecognized command, it replies with a fail ACK.
+* `setup()`: Initializes serial communication and sets the LED pin as an output.
+* `loop()`: Acts as a test bench. It artificially triggers an ON command, waits 3 seconds, and then triggers an OFF command to verify the logic works.
+
+---
+
+## Feedback / Personal Notes
+* Pedro 25/04/2026:
+* 
+*
