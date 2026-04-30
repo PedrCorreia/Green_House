@@ -84,7 +84,7 @@ U1 AP2112K-3.3 (LDO 3.3V 600mA)
 |---|---|---|---|
 | U1 | AP2112K-3.3 | SOT-23-5 HandSoldering | LDO 3.3V regulator |
 | U2 | DHT22 | TO-92-3 | Temp/humidity sensor |
-| U3 | SSD1306 OLED | ER_OLEDOM0.91 | 0.91" I2C OLED display |
+| U3 | SH1106 OLED | ER_OLEDOM0.96 | 0.96" I2C OLED display |
 | U6 | ESP32 DevKit V1 | DOIT_ESP32_DEVKIT_V1 | Main MCU |
 | Q1 | AO3401A | SOT-23-5 HandSoldering | P-ch MOSFET |
 | R1 | 10kΩ | R_Axial THT | Gate pull-down resistor |

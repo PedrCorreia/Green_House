@@ -74,12 +74,12 @@ J3: Connector_PinHeader_2.54mm:PinSocket_1x14_P2.54mm_Vertical
 
 ---
 
-## OLED Display (SSD1306 0.91")
+## OLED Display (SH1106 0.96")
 
 ### Component
 | Parameter | Value |
 |---|---|
-| Part | SSD1306 OLED 0.91" |
+| Part | SH1106 OLED 0.96" |
 | Symbol | ER_OLEDOM0.91_1x-I2C |
 | Protocol | I2C |
 | I2C Address | 0x3C |
@@ -101,7 +101,7 @@ J3: Connector_PinHeader_2.54mm:PinSocket_1x14_P2.54mm_Vertical
 ### I2C Bus
 | Device | Address | Conflict? |
 |---|---|---|
-| SSD1306 OLED | 0x3C | — |
+| SH1106 OLED | 0x3C | — |
 
 ### Decoupling
 | Ref | Value | Placement |

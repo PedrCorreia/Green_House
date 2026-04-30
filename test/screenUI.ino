@@ -1,14 +1,7 @@
-#define BLYNK_TEMPLATE_ID "TMPL4hwOonb-"
-#define BLYNK_TEMPLATE_NAME "34346 Group Project"
-#define BLYNK_AUTH_TOKEN "8hgm20lHCIImSiweKzr81MxVGDqoVwgh"
-
 #include <Wire.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_SH110X.h>
 #include <DHT.h>
-#include <WiFi.h>
-#include <WiFiClient.h>
-#include <BlynkSimpleEsp32.h>
 
 // --- Pin Definitions based on PCB Documentation ---
 
@@ -32,22 +25,10 @@
 Adafruit_SH1106G display = Adafruit_SH1106G(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
 bool oled_connected = false;
 
-// =========================
-// User-configurable settings
-// =========================
-#define WIFI_SSID       "stas iphone"
-#define WIFI_PASSWORD   "KAPELERII"
-
-// =========================
-// Global objects
-// =========================
-WiFiClient espClient;
-BlynkTimer timer;
-
 // Temperature Sensor
 DHT dht(DHTPIN, DHTTYPE);
 
-// --- Global variables near the top of your file ---
+// --- Add these global variables near the top of your file ---
 unsigned long lastSensorReadTime = 0;
 const unsigned long sensorInterval = 2000; // Read every 2 seconds
 
@@ -58,8 +39,6 @@ float lastLux = -999.0;
 
 unsigned long lastBlinkTime = 0;
 bool blinkState = false;
-
-bool oled_enabled = true; // Controlled by Blynk Web Dashboard to turn on/off the OLED
 
 // ==========================================
 // BITMAP GRAPHICS (Generated from image2cpp)
@@ -128,12 +107,6 @@ void setup() {
   pinMode(LIGHT_PIN, INPUT);
   Serial.println(F("-> KY-018 Photoresistor initialized on GPIO 34"));
 
-  // 5. Connect to Blynk / WiFi (Non-Blocking mode)
-  Serial.println("-> Connecting to WiFi & Blynk...");
-  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-  Blynk.config(BLYNK_AUTH_TOKEN); 
-  // Let loop() handle connection silently so OLED still works without WiFi
-
   Serial.println("----------------------------------------\n");
   delay(2000);
 }
@@ -141,11 +114,6 @@ void setup() {
 void loop() {
   unsigned long currentMillis = millis();
   bool needsUIUpdate = false;
-
-  // Let Blynk handle networking when WiFi is connected
-  if (WiFi.status() == WL_CONNECTED) {
-    Blynk.run();
-  }
 
   // 1. Blink Timer (Runs every 500ms)
   if (currentMillis - lastBlinkTime >= 500) {
@@ -178,23 +146,12 @@ void loop() {
       lastHum = humidity;
       lastLux = lux;
       needsUIUpdate = true;
-
-      // Update Blynk Data (only if WiFi connected)
-      if (WiFi.status() == WL_CONNECTED) {
-        Blynk.virtualWrite(V1, temperature); // Send Temp to V1
-        Blynk.virtualWrite(V2, humidity);    // Send Hum  to V2
-        Blynk.virtualWrite(V3, lux);         // Send Lux  to V3
-      }
     }
   }
 
   // 3. Centralized UI Update execution
-  if (needsUIUpdate && oled_connected && oled_enabled) {
+  if (needsUIUpdate && oled_connected) {
     updateUI(lastTemp, lastHum, lastLux);
-  } else if (!oled_enabled && oled_connected) {
-     // If user disabled display via web, just keep it blank
-     display.clearDisplay();
-     display.display();
   }
 
   // 4. You can put other reactive code here!
@@ -202,21 +159,8 @@ void loop() {
   // if (digitalRead(BUTTON_PIN) == LOW) { switchScreen(); }
 }
 
-// =========================
-// Blynk Commands
-// =========================
-// This block runs when a button widget on V0 changes on your Blynk App/Dashboard
-BLYNK_WRITE(V0) {
-  int value = param.asInt();
-  oled_enabled = (value == 1);
-  Serial.print("Blynk Dashboard says OLED is now: ");
-  Serial.println(oled_enabled ? "ON" : "OFF");
-  
-  if (oled_enabled) updateUI(lastTemp, lastHum, lastLux); // Refresh instantly
-}
-
 void updateUI(float temp, float hum, float lux) {
-  if (!oled_connected || !oled_enabled) return;
+  if (!oled_connected) return;
 
   display.clearDisplay();
   
@@ -230,13 +174,8 @@ void updateUI(float temp, float hum, float lux) {
   // W (WiFi) Blinking Status
   display.setCursor(68, 1);
   display.print("W");
-  // Fill circle only if connected, otherwise hollow
-  if (WiFi.status() == WL_CONNECTED) {
-     if (blinkState) display.fillCircle(78, 4, 3, SH110X_WHITE);
-     else display.drawCircle(78, 4, 3, SH110X_WHITE);
-  } else {
-     display.drawCircle(78, 4, 3, SH110X_WHITE); // Always hollow if offline
-  }
+  if (blinkState) display.fillCircle(78, 4, 3, SH110X_WHITE);
+  else display.drawCircle(78, 4, 3, SH110X_WHITE);
   
   // L (LoRa) Blinking Status
   display.setCursor(85, 1);
