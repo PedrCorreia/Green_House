@@ -1,0 +1,166 @@
+# Comunication Protocol
+*Author: Pedro Correia*
+*Date:01/05/2026*
+## Abstract
+- Similar to class B *LoRa* protocols, a timed, synchronized gateway awakens after T_DS (time of deep sleep) together with the sensor nodes. After reading the sensor values, it controls and synchronizes them before sending them all back to sleep. If the network is available, it then forwards the data to Blynk over MQTT.
+```
+.----
+| **Sensor Nodes**
+| ┌────────┐   ┌────────┐           ┌────────┐
+| │  nS,1  │   │  nS,2  │   · · ·   │  nS,N  │
+| └───┬────┘   └───┬────┘           └───┬────┘
+|     |            |        LoRa        |
+|     '------------'--------------------'
+'-----                     |
+                           v
+              .-------------------------.            .---------------.
+              |       **Gateway**       |    MQTT    |   **Cloud**   |
+              |   Decision & control    |<---------->|     Blynk     |
+              '-------------------------'            '---------------'
+                            |                        
+.-----                      | LoRa
+|            .--------------+--------------.
+|            |              |              |
+|            v              v              v
+|         .-------.      .-------.      .-------.
+|         | nL,1  |      | nL,2  |· · · | nL,N  |
+|         '-------'      '-------'      '-------'
+| **Light Control Nodes**
+'----
+```
+--- 
+## Hardware Configuration
+### Sensor Nodes
+
+| Component            | Measurement   | Unit    | Type     | Size         | Transmitted |
+|----------------------|---------------|---------|----------|--------------|-------------|
+| ESP32                | Device ID     | —       | uint32   | 4 bytes      | ✓           |
+| LoRa Module          | —             | —       | —        | —            | (radio link)|
+| DHT22                | Temperature   | °C      | int16    | 2 bytes      | ✓           |
+| DHT22                | Humidity      | %       | uint8    | 1 byte       | ✓           |
+| Photoresistor        | Illuminance   | lux     | uint16   | 2 bytes      | ✓           |
+| Soil Moisture Sensor | Soil Moisture | V (ADC) | uint16   | 2 bytes      | ✓           |
+| Water Leakage Sensor | Leakage       | boolean | uint8    | 1 byte       | ✓           |
+| Battery              | Charge level  | %       | uint8    | 1 byte       | ✓           |
+|                      |               |         | **Total**| **13 bytes** |             |
+#### Data Transmited
+```
+Byte offset:  0    1    2    3    4    5    6    7    8    9   10   11   12   13   
+              ┌────┬────┬────┬────┬────┬────┬────┬────┬────┬────┬────┬────┬────┐
+Field:        │     Device ID     │   Tmp   │Hum │   Lux   │   Soi   │Lk  │Bat │
+              └────┴────┴────┴────┴────┴────┴────┴────┴────┴────┴────┴────┴────┘
+Type:         │   uint32 (4 B)    │int16(2B)│ u8 │uint16(2B)│u16     │ u8 │ u8 │
+```
+### Light Sensors
+| Component   | Function          | Unit         | Type   | Size         | Received    |
+|-------------|-------------------|--------------|--------|--------------|-------------|
+| ESP32       | Device ID         | —            | uint32 | 4 bytes      | ✓           |
+| LoRa Module | —                 | —            | —      | —            | (radio link)|
+| LED         | Light intensity   | PWM (0–255)  | uint8  | —            | (local)     |
+|             |                   |              |**Total**| **4 bytes** |             |~
+#### Data Transmited
+```
+Byte offset:  0    1    2    3
+              ┌────┬────┬────┬────┐
+Field:        │      Device ID    │
+              └────┴────┴────┴────┘
+Type:         │     uint32 (4 B)  │
+```
+#### Data Recieved 
+```
+Byte offset:  0    1    2    3    4    5
+              ┌────┬────┬────┬────┬────┬────┐
+Field:        │   Device ID       │ Des lux │
+              └────┴────┴────┴────┴────┴────┘
+Type:         │    uint32 (4 B)   │ uint16  │
+```
+
+### Gateway
+ 
+| Component   | Function                              | Direction |
+|-------------|---------------------------------------|-----------|
+| ESP32       | Decision logic, clock management      | —         |
+| LoRa Module | Receive sensor payloads (RX1/RX2)     | RX        |
+| LoRa Module | Broadcast light commands + desired lux| TX        |
+
+#### Data Transmited
+```
+Byte offset:  0    1    2    3    4    5
+              ┌────┬────┬────┬────┬────┬────┐
+Field:        │   Device ID       │ Des lux │
+              └────┴────┴────┴────┴────┴────┘
+Type:         │    uint32 (4 B)   │ uint16  │
+```
+
+#### Data Recieved
+```
+Byte offset:  0    1    2    3    4    5    6    7    8    9   10   11   12   13   
+              ┌────┬────┬────┬────┬────┬────┬────┬────┬────┬────┬────┬────┬────┐
+Field:        │     Device ID     │   Tmp   │Hum │   Lux   │   Soi   │Lk  │Bat │
+              └────┴────┴────┴────┴────┴────┴────┴────┴────┴────┴────┴────┴────┘
+Type:         │   uint32 (4 B)    │int16(2B)│ u8 │uint16(2B)│u16     │ u8 │ u8 │
+```
+---
+## Protocol Flow
+### Boot / Registration
+#### ID Assembly
+- Each node due to the esp as a proper id; 
+- Hardcoded in the embeeded devise is the suffix if a light noder or a sensor node
+- this automatically origiante the **userID**
+
+The most significant byte of the `uint32` device ID encodes the node type. The gateway reads this at registration and queues nodes accordingly , sensor nodes first, light nodes last.
+ 
+```
+  Byte 3 (MSB)   Byte 2        Byte 1        Byte 0 (LSB)
+  ┌────────────┬─────────────────────────────────────────┐
+  │  Type flag │            Unique hardware ID           │
+  └────────────┴─────────────────────────────────────────┘
+       0x01 = sensor node    →  front of queue
+       0x02 = light node     →  end of queue
+```
+
+#### Initial Node Sync
+- Hardcoded in the embeeded devise is the **network password** (for now unincripted)
+- When first turned on, or rebooted (long button press to reset, need to confirm with hardware, but should be straightforward), the gateway and nodes are all powered on. The gateway opens a **registration window of 1 minute (T_reg=1)**, extended by 10 seconds per each new connection. 
+- Nodes transmit within a random 10-second window to avoid collisions. After transmitting, each node receives a confirmation that it has connected and remains idle. Once no new nodes connect and the window expires, the gateway assigns time slots automatically, resets all clocks, and goes to sleep.
+```
+  Gateway + all nodes power on
+      |
+      v
+  Gateway opens registration window (T_reg = 60 s)
+      |
+      .-----------------------------------------------. 
+      |  Each node:                                   |
+      |    Wait random T ∈ [0, 10 s]                  |
+      |        |                                      |
+      |        v                                      |
+      |    Channel idle? (RSSI check)                 |
+      |        ├── No  → wait new random T, retry     |
+      |        └── Yes → transmit [password | ID]     |
+      |                      |                        |
+      |                      v                        |
+      |              Gateway validates password       |
+      |                      ├── rejected → ignore    |
+      |                      └── accepted             |
+      |                            |                  |
+      |                            v                  |
+      |                  MSB 0x01 → sensor queue      |
+      |                  MSB 0x02 → light queue       |
+      |                            |                  |
+      |                            v                  |
+      |                  Gateway sends ACK            |
+      |                  T_reg += 10 s                |
+      |                  Node goes idle               |
+      '-----------------------------------------------'
+      |
+      | T_reg expires with no new connections
+      v
+  Final queue: [ nS,1 · · · nS,N ] → [ nL,1 · · · nL,N ]
+      |
+      v
+  Gateway auto-assigns time slots by queue order
+      |
+      v
+  Gateway resets all clocks → all nodes sleep
+```
+#### Time Slots
