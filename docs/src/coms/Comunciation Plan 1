@@ -209,4 +209,10 @@ Zoom — each light slot [nL,N]:
                                                     go to sleep
 ```
 
-### Cycle Protocol
+### Possible problems
+- Clock drift, since its a greenhouse it should be turned on at least 6 times a day  (every 4h) to ensure theres no leakge and the plants are nots too hot (dry), we need to search clock drif for current devices and see if its reasonalbe the current setup or the they need to wake up even more often
+- The gateway only transmits in light slots,it never listens for a confirmation. If a light node misses its command it silently stays at the wrong brightness until the next cycle, with no error logged. Unlike sensor slots there is no way to detect failure.
+- If MQTT to Blynk fails, the readings from that cycle are discarded. There is no local buffer on the gateway. In a greenhouse context a few missed cycles during a connectivity drop could mean missing a temperature spike or leakage event.
+- Unencrypted hardcoded password means anyone with a LoRa module nearby can register a rogue node or sniff all sensor readings. Low risk for a greenhouse but worth noting for the paper.
+- T_cycle grows linearly with N nodes. For large deployments T_cycle could exceed your 4-hour target, meaning the greenhouse goes longer between readings than intended. Worth calculating a maximum node count for your chosen T_slot
+-If only some nodes reboot (power cut, watchdog reset) mid-deployment, they re-enter registration and may receive different slot numbers, corrupting the existing slot assignment without the rest of the network knowing.
