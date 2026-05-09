@@ -23,11 +23,14 @@
 #define LORA_SYNC        "12"
 #define LORA_BW          125
 #define LORA_WDT         60000UL
+#define LORA_RETRY_INTERVAL 5000UL
 
 // ---------- Protocol ----------
-// packet type
-const uint8_t cmdType = 0x02;
-const uint8_t ackType = 0x03;
+// Packet format: 4 bytes device ID + 1 byte command/status.
+// For this light node:
+//   0000000501 = light ON or ACK OK
+//   0000000500 = light OFF or ACK FAIL
+const uint32_t lightNodeId = 5UL;
 
 // command value
 const uint8_t cmdOff = 0x00;
@@ -40,27 +43,30 @@ const uint8_t ackOk   = 0x01;
 // external LED pin
 const int ledPin = 2;
 
-// define an ACK packet
-// format: [ackType, result]
-uint8_t ack[2];
+// ACK packet format: [4 bytes device ID, 1 byte result]
+uint8_t ack[5];
 
 HardwareSerial loraSerial(1);
 bool loraReady = false;
+unsigned long lastLoRaRetryAttempt = 0;
 
 
 // ---------- Function declarations ----------
 bool initLoRa();
+void retryLoRaIfNeeded();
 String sendLoRaCommand(const String& cmd, int timeoutMs);
 String readLoRaLine(int timeoutMs);
 void flushLoRaInput();
+String bytesToHex(const uint8_t* data, size_t len);
 
 bool hexToBytes(const String& hexStr, uint8_t* out, size_t outLen);
 int hexNibble(char c);
+uint32_t getDeviceId(uint8_t packet[5]);
 
 void setLed(bool on);
 void makeAck(uint8_t result);
 void sendAck();
-void handleCmd(uint8_t cmd[2]);
+void handleCmd(uint8_t cmd[5]);
 void listenForCmd();
 
 
@@ -77,23 +83,25 @@ void setLed(bool on) {
 
 // build ACK packet after handling CMD
 void makeAck(uint8_t result) {
-  ack[0] = ackType;
-  ack[1] = result;
+  // Put this node's ID in the ACK so the Gateway knows who replied.
+  ack[0] = (uint8_t)((lightNodeId >> 24) & 0xFF);
+  ack[1] = (uint8_t)((lightNodeId >> 16) & 0xFF);
+  ack[2] = (uint8_t)((lightNodeId >> 8) & 0xFF);
+  ack[3] = (uint8_t)(lightNodeId & 0xFF);
+  ack[4] = result;
 }
 
-// currently only prints ACK to Serial for testing
-// later this can be replaced by real LoRa ACK sending
+// Send ACK back to the Gateway by LoRa.
 void sendAck() {
-  Serial.print("ACK packet: [0x");
-  Serial.print(ack[0], HEX);
-  Serial.print(", 0x");
-  Serial.print(ack[1], HEX);
-  Serial.println("]");
+  if (!loraReady) {
+    Serial.println("ACK TX skipped: LoRa not ready.");
+    return;
+  }
 
   // Give Gateway a short time to switch from TX mode to RX mode.
   delay(300);
 
-  String hexPayload = bytesToHex(ack, 2);
+  String hexPayload = bytesToHex(ack, 5);
   String cmd = String("radio tx ") + hexPayload;
 
   Serial.print("Sending ACK by LoRa: ");
@@ -103,6 +111,8 @@ void sendAck() {
 
   if (first != "ok") {
     Serial.println("ACK TX failed: RN2483 did not accept command.");
+    Serial.print("ACK TX failed reason: ");
+    Serial.println(first.length() ? first : "<timeout>");
     return;
   }
 
@@ -115,39 +125,42 @@ void sendAck() {
     Serial.println("ACK sent.");
   } else {
     Serial.println("ACK TX not completed.");
+    Serial.print("ACK TX failed reason: ");
+    Serial.println(done.length() ? done : "<timeout>");
   }
 }
 
 // handle the CMD packet
-// format: [cmdType, cmdValue]
-void handleCmd(uint8_t cmd[2]) {
-  Serial.print("CMD packet: [0x");
-  Serial.print(cmd[0], HEX);
-  Serial.print(", 0x");
-  Serial.print(cmd[1], HEX);
-  Serial.println("]");
+// format: [4 bytes device ID, 1 byte command value]
+void handleCmd(uint8_t cmd[5]) {
+  uint32_t deviceId = getDeviceId(cmd);
 
-  // first byte must be CMD type
-  if (cmd[0] != cmdType) {
-    Serial.println("Wrong packet type.");
-    makeAck(ackFail);
-    sendAck();
+  // LoRa P2P packets can be heard by all nodes using the same radio settings.
+  // If this packet is not for device ID 5, ignore it and do not send ACK FAIL.
+  if (deviceId != lightNodeId) {
+    Serial.print("Packet for other device ID: ");
+    Serial.println(deviceId);
     return;
   }
 
-  // second byte check
-  if (cmd[1] == cmdOn) {
+  Serial.print("CMD value: 0x");
+  Serial.println(cmd[4], HEX);
+
+  // digitalWrite has no success return value.
+  // ACK OK means this node received a valid CMD and executed the GPIO command.
+  if (cmd[4] == cmdOn) {
     setLed(true);
     makeAck(ackOk);
     sendAck();
   }
-  else if (cmd[1] == cmdOff) {
+  else if (cmd[4] == cmdOff) {
     setLed(false);
     makeAck(ackOk);
     sendAck();
   }
   else {
-    Serial.println("Unknown CMD value.");
+    // The packet is for this node, but the command value is not supported.
+    Serial.println("Unknown CMD value for this light node.");
     makeAck(ackFail);
     sendAck();
   }
@@ -165,28 +178,44 @@ void setup() {
   Serial.println("=== Light Control Node starting ===");
 
   if (!initLoRa()) {
-    Serial.println("RN2483 init failed. Stop here.");
-    while (true) {
-      delay(1000);
-    }
+    Serial.println("RN2483 init failed. It will retry in loop().");
+    loraReady = false;
   }
 
-  Serial.println("Light Control Node ready.");
-  Serial.println("Waiting for CMD packet: 0201 = ON, 0200 = OFF");
+  Serial.println("Light Control Node running.");
+  if (loraReady) {
+    Serial.println("Waiting for CMD packet: 0000000501 = ON, 0000000500 = OFF");
+  } else {
+    Serial.println("LoRa is not ready yet. It will retry before listening.");
+  }
 }
 
 
 void loop() {
+  retryLoRaIfNeeded();
+
+  if (!loraReady) {
+    delay(50);
+    return;
+  }
+
   listenForCmd();
 }
 
 
 // ---------- Real LoRa receive part ----------
 void listenForCmd() {
+  if (!loraReady) {
+    return;
+  }
+
   String first = sendLoRaCommand("radio rx 0", 1500);
 
   if (first != "ok") {
     Serial.println("Failed to enter RX mode.");
+    Serial.print("RX failed reason: ");
+    Serial.println(first.length() ? first : "<timeout>");
+    loraReady = false;
     delay(1000);
     return;
   }
@@ -203,20 +232,17 @@ void listenForCmd() {
     Serial.print("Received HEX: ");
     Serial.println(hexPayload);
 
-    // CMD packet should be 2 bytes = 4 HEX characters
-    if (hexPayload.length() != 4) {
-      Serial.println("Wrong CMD length. Expected 4 HEX chars.");
-      makeAck(ackFail);
-      sendAck();
+    // CMD packet should be 5 bytes = 10 HEX characters.
+    // Wrong length may be a packet for another node, so ignore it quietly.
+    if (hexPayload.length() != 10) {
+      Serial.println("Wrong packet length. Ignoring.");
       return;
     }
 
-    uint8_t cmd[2];
+    uint8_t cmd[5];
 
-    if (!hexToBytes(hexPayload, cmd, 2)) {
-      Serial.println("HEX decode failed.");
-      makeAck(ackFail);
-      sendAck();
+    if (!hexToBytes(hexPayload, cmd, 5)) {
+      Serial.println("HEX decode failed. Ignoring.");
       return;
     }
 
@@ -236,6 +262,8 @@ void listenForCmd() {
 
 // ---------- LoRa init ----------
 bool initLoRa() {
+  loraReady = false;
+
   pinMode(RN2483_RST_PIN, OUTPUT);
   digitalWrite(RN2483_RST_PIN, HIGH);
 
@@ -264,6 +292,7 @@ bool initLoRa() {
   String mp = sendLoRaCommand("mac pause", 2000);
   if (mp.length() == 0 || mp == "invalid_param") {
     Serial.println("mac pause failed.");
+    loraReady = false;
     return false;
   }
 
@@ -291,12 +320,42 @@ bool initLoRa() {
       Serial.print(cmds[i]);
       Serial.print(" -> ");
       Serial.println(r.length() ? r : "<timeout>");
+      loraReady = false;
       return false;
     }
   }
 
   loraReady = true;
   return true;
+}
+
+void retryLoRaIfNeeded() {
+  if (loraReady) return;
+
+  // Do not stop forever if the RN2483 is missing or not ready.
+  // Keep retrying so the node can recover after wiring or power problems.
+  unsigned long now = millis();
+  if (now - lastLoRaRetryAttempt < LORA_RETRY_INTERVAL) return;
+
+  lastLoRaRetryAttempt = now;
+  Serial.println("LoRa init failed, retrying");
+
+  if (initLoRa()) {
+    Serial.println("LoRa reconnected");
+    Serial.println("Waiting for CMD packet: 0000000501 = ON, 0000000500 = OFF");
+  }
+}
+
+uint32_t getDeviceId(uint8_t packet[5]) {
+  uint32_t id = 0;
+
+  // Rebuild the 32-bit device ID from the first 4 bytes.
+  id |= ((uint32_t)packet[0] << 24);
+  id |= ((uint32_t)packet[1] << 16);
+  id |= ((uint32_t)packet[2] << 8);
+  id |= (uint32_t)packet[3];
+
+  return id;
 }
 
 

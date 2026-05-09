@@ -8,9 +8,10 @@
  * - Connect WiFi + MQTT
  * - Receive ON / OFF from MQTT control topic
  * - Pack LoRa CMD packet:
- *     ON  -> 0201
- *     OFF -> 0200
+ *     ON  -> 0000000501
+ *     OFF -> 0000000500
  * - Send CMD to Light Control Node by RN2483 raw LoRa P2P
+ * - Wait for ACK from the light node
  *
  * MQTT test:
  * - Subscribe: esp32/myroom123/status
@@ -25,7 +26,7 @@
 
 // ---------- WiFi / MQTT ----------
 // Change these to your real WiFi. Phone hotspot is recommended for testing.
-#define WIFI_SSID       "Zhe iphone"
+#define WIFI_SSID       "Zhe iPhone"
 #define WIFI_PASSWORD   "20011109"
 
 #define MQTT_BROKER     "broker.emqx.io"
@@ -36,6 +37,8 @@
 #define TOPIC_PING      "esp32/myroom123/ping"
 
 #define MQTT_RECONNECT_INTERVAL  3000UL
+#define LORA_RETRY_INTERVAL      5000UL
+#define ACK_TIMEOUT_MS           5000UL
 
 // ---------- Pins ----------
 // Same style as the full Gateway code you sent before.
@@ -60,13 +63,18 @@
 #define LORA_WDT         60000UL
 
 // ---------- Protocol ----------
-#define MSG_TYPE_CMD     0x02
+// Packet format: 4 bytes device ID + 1 byte command/status.
+// For device ID 5:
+//   0000000501 = light ON or ACK OK
+//   0000000500 = light OFF or ACK FAIL
+#define LIGHT_NODE_ID    5UL
 #define CMD_LIGHT_OFF    0x00
 #define CMD_LIGHT_ON     0x01
+#define ACK_FAIL         0x00
+#define ACK_OK           0x01
 
-// If your Light Node already sends ACK by LoRa, set this to true.
-// If your Light Node only controls LED and does not send ACK yet, keep false.
-#define USE_ACK          false
+// Set true because the light node sends a LoRa ACK after handling the command.
+#define USE_ACK          true
 
 WiFiClient espClient;
 PubSubClient mqttClient(espClient);
@@ -74,6 +82,7 @@ HardwareSerial loraSerial(1);
 
 bool loraReady = false;
 unsigned long lastMqttReconnectAttempt = 0;
+unsigned long lastLoRaRetryAttempt = 0;
 
 // ---------- Function declarations ----------
 void connectToWiFi();
@@ -83,13 +92,15 @@ void mqttCallback(char* topic, byte* payload, unsigned int length);
 void publishStatus(const String& msg);
 
 bool initLoRa();
+void retryLoRaIfNeeded();
 String sendLoRaCommand(const String& cmd, int timeoutMs);
 String readLoRaLine(int timeoutMs);
 void flushLoRaInput();
 
 bool sendLightCmd(bool turnOn);
 bool sendRadioTxHex(const String& hexPayload, const char* label);
-bool waitForAck();
+int waitForAck(bool turnOn);
+String makeDevicePacket(uint32_t deviceId, uint8_t value);
 String bytesToHex(const uint8_t* data, size_t len);
 
 void setup() {
@@ -106,16 +117,17 @@ void setup() {
   mqttClient.setCallback(mqttCallback);
 
   if (!initLoRa()) {
-    Serial.println("RN2483 init failed. Stop here.");
-    while (true) {
-      delay(1000);
-    }
+    Serial.println("RN2483 init failed. It will retry in loop().");
+    loraReady = false;
   }
 
   connectToMQTT();
 
   Serial.println();
-  Serial.println("Gateway ready.");
+  Serial.println("Gateway running.");
+  if (!loraReady) {
+    Serial.println("LoRa is not ready yet. Commands will fail until it reconnects.");
+  }
   Serial.println("MQTT control topic: " TOPIC_CONTROL);
   Serial.println("Publish payload: ON or OFF");
   Serial.println("Serial shortcut: type 1 = ON, 0 = OFF, p = PING");
@@ -123,6 +135,7 @@ void setup() {
 
 void loop() {
   ensureWiFiConnected();
+  retryLoRaIfNeeded();
 
   unsigned long now = millis();
 
@@ -238,15 +251,13 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
         msg.equalsIgnoreCase("LIGHT ON") ||
         msg.equalsIgnoreCase("LIGHT_ON")) {
 
-      bool ok = sendLightCmd(true);
-      publishStatus(ok ? "Light ON CMD sent by LoRa" : "Light ON CMD failed");
+      sendLightCmd(true);
     }
     else if (msg.equalsIgnoreCase("OFF") ||
              msg.equalsIgnoreCase("LIGHT OFF") ||
              msg.equalsIgnoreCase("LIGHT_OFF")) {
 
-      bool ok = sendLightCmd(false);
-      publishStatus(ok ? "Light OFF CMD sent by LoRa" : "Light OFF CMD failed");
+      sendLightCmd(false);
     }
     else {
       publishStatus("Unknown control command. Use ON or OFF.");
@@ -273,6 +284,8 @@ void publishStatus(const String& msg) {
 
 // ---------- LoRa init ----------
 bool initLoRa() {
+  loraReady = false;
+
   pinMode(RN2483_RST_PIN, OUTPUT);
   digitalWrite(RN2483_RST_PIN, HIGH);
 
@@ -301,6 +314,7 @@ bool initLoRa() {
   String mp = sendLoRaCommand("mac pause", 2000);
   if (mp.length() == 0 || mp == "invalid_param") {
     Serial.println("mac pause failed.");
+    loraReady = false;
     return false;
   }
 
@@ -328,6 +342,7 @@ bool initLoRa() {
       Serial.print(cmds[i]);
       Serial.print(" -> ");
       Serial.println(r.length() ? r : "<timeout>");
+      loraReady = false;
       return false;
     }
   }
@@ -336,55 +351,102 @@ bool initLoRa() {
   return true;
 }
 
+void retryLoRaIfNeeded() {
+  if (loraReady) return;
+
+  // Do not stop the ESP32 if RN2483 init fails.
+  // Retry every few seconds so the system can recover by itself.
+  unsigned long now = millis();
+  if (now - lastLoRaRetryAttempt < LORA_RETRY_INTERVAL) return;
+
+  lastLoRaRetryAttempt = now;
+  Serial.println("LoRa init failed, retrying");
+  publishStatus("LoRa init failed, retrying");
+
+  if (initLoRa()) {
+    Serial.println("LoRa reconnected");
+    publishStatus("LoRa reconnected");
+  }
+}
+
 // ---------- Send light CMD ----------
 bool sendLightCmd(bool turnOn) {
+  String action = turnOn ? "ON" : "OFF";
+
+  // If ACK is not received, retry the command once.
+  // ON and OFF are safe to repeat because sending ON twice still means ON.
+  const int maxRetries = 1;
+
   if (!loraReady) {
     Serial.println("LoRa not ready. Cannot send light CMD.");
+    publishStatus("Light CMD failed: LoRa not ready");
     return false;
   }
 
-  uint8_t packet[2];
+  for (int attempt = 0; attempt <= maxRetries; attempt++) {
+    String hexPayload;
 
-  // Byte 0: message type. 0x02 means CMD packet.
-  packet[0] = MSG_TYPE_CMD;
+    if (turnOn) {
+      hexPayload = makeDevicePacket(LIGHT_NODE_ID, CMD_LIGHT_ON);
+    } else {
+      hexPayload = makeDevicePacket(LIGHT_NODE_ID, CMD_LIGHT_OFF);
+    }
 
-  // Byte 1: command value. 0x01 = ON, 0x00 = OFF.
-  if (turnOn) {
-    packet[1] = CMD_LIGHT_ON;
-  } else {
-    packet[1] = CMD_LIGHT_OFF;
-  }
+    Serial.print("Sending light CMD by LoRa: ");
+    Serial.println(hexPayload);
 
-  String hexPayload = bytesToHex(packet, 2);
+    // radio_tx_ok only means the Gateway radio sent the packet.
+    // It does not prove the light node received it.
+    String cmd = String("radio tx ") + hexPayload;
+    flushLoRaInput();
+    String first = sendLoRaCommand(cmd, 2000);
 
-  Serial.print("Sending light CMD by LoRa: ");
-  Serial.println(hexPayload);
+    if (first != "ok") {
+      Serial.println("Light CMD failed: RN2483 did not accept the TX command.");
+      Serial.print("TX failed reason: ");
+      Serial.println(first.length() ? first : "<timeout>");
+      publishStatus("Light CMD failed: Gateway LoRa TX failed");
+      return false;
+    }
 
-  String cmd = String("radio tx ") + hexPayload;
-  String first = sendLoRaCommand(cmd, 2000);
+    String done = readLoRaLine(10000);
 
-  if (first != "ok") {
-    Serial.println("Light CMD failed: RN2483 did not accept the TX command.");
-    return false;
-  }
+    Serial.print("RN2483 => ");
+    Serial.println(done.length() ? done : "<timeout>");
 
-  String done = readLoRaLine(10000);
+    if (done != "radio_tx_ok") {
+      Serial.println("Light CMD failed: TX was not completed.");
+      Serial.print("TX failed reason: ");
+      Serial.println(done.length() ? done : "<timeout>");
+      publishStatus("Light CMD failed: Gateway LoRa TX failed");
+      return false;
+    }
 
-  Serial.print("RN2483 => ");
-  Serial.println(done.length() ? done : "<timeout>");
-
-  if (done != "radio_tx_ok") {
-    Serial.println("Light CMD failed: TX was not completed.");
-    return false;
-  }
-
-  Serial.println("Light CMD TX done.");
+    Serial.println("Light CMD TX done.");
+    publishStatus(String("Light ") + action + " CMD sent");
 
 #if USE_ACK
-  return waitForAck();
+    int ackResult = waitForAck(turnOn);
+
+    if (ackResult == 1) {
+      return true;
+    }
+    if (ackResult == 0) {
+      return false;
+    }
+
+    if (attempt < maxRetries) {
+      Serial.println("ACK timeout. Retrying light CMD...");
+    } else {
+      publishStatus("Light CMD failed: ACK timeout");
+      return false;
+    }
 #else
-  return true;
+    return true;
 #endif
+  }
+
+  return false;
 }
 
 bool sendRadioTxHex(const String& hexPayload, const char* label) {
@@ -415,51 +477,87 @@ bool sendRadioTxHex(const String& hexPayload, const char* label) {
   return (done == "radio_tx_ok");
 }
 
-bool waitForAck() {
+int waitForAck(bool turnOn) {
+  String action = turnOn ? "ON" : "OFF";
+
   Serial.println("Waiting for ACK...");
 
-  String first = sendLoRaCommand("radio rx 0", 1500);
+  // Return values:
+  //   1  = ACK OK
+  //   0  = ACK FAIL or cannot enter RX
+  //  -1  = ACK timeout, caller may retry the CMD
+  unsigned long start = millis();
 
-  if (first != "ok") {
-    Serial.println("Gateway failed to enter RX mode.");
-    return false;
-  }
+  while (millis() - start < ACK_TIMEOUT_MS) {
+    String first = sendLoRaCommand("radio rx 0", 1500);
 
-  String line = readLoRaLine(5000);
-
-  if (line.startsWith("radio_rx ")) {
-    String hexPayload = line.substring(9);
-    hexPayload.trim();
-    hexPayload.toUpperCase();
-
-    Serial.print("ACK received HEX: ");
-    Serial.println(hexPayload);
-
-    if (hexPayload == "0301") {
-      Serial.println("ACK OK: command received and executed.");
-      return true;
+    if (first != "ok") {
+      Serial.println("Gateway failed to enter RX mode.");
+      publishStatus("Light CMD failed: ACK wait failed");
+      return 0;
     }
-    else if (hexPayload == "0300") {
-      Serial.println("ACK FAIL: node received command but failed to handle it.");
-      return false;
+
+    unsigned long elapsed = millis() - start;
+    int timeLeft = (int)(ACK_TIMEOUT_MS - elapsed);
+    if (timeLeft <= 0) break;
+
+    String line = readLoRaLine(timeLeft);
+
+    if (line.startsWith("radio_rx ")) {
+      String hexPayload = line.substring(9);
+      hexPayload.trim();
+      hexPayload.toUpperCase();
+
+      Serial.print("ACK received HEX: ");
+      Serial.println(hexPayload);
+
+      String ackOkPayload = makeDevicePacket(LIGHT_NODE_ID, ACK_OK);
+      String ackFailPayload = makeDevicePacket(LIGHT_NODE_ID, ACK_FAIL);
+
+      // Only accept ACK packets that match the light node device ID.
+      // Other LoRa packets may come from sensor nodes later.
+      if (hexPayload == ackOkPayload) {
+        Serial.println("ACK OK: command received and executed.");
+        publishStatus(String("Light ") + action + " ACK OK");
+        return 1;
+      }
+      else if (hexPayload == ackFailPayload) {
+        Serial.println("ACK FAIL: node received command but failed to handle it.");
+        publishStatus("Light CMD failed: ACK FAIL");
+        return 0;
+      }
+      else {
+        Serial.println("ACK is not from the light node. Ignoring.");
+      }
+    }
+    else if (line == "radio_err") {
+      Serial.println("No ACK received before timeout.");
+      return -1;
     }
     else {
-      Serial.println("Unknown ACK packet.");
-      return false;
+      Serial.print("Unexpected ACK response: ");
+      Serial.println(line.length() ? line : "<timeout>");
+      return -1;
     }
   }
-  else if (line == "radio_err") {
-    Serial.println("No ACK received.");
-    return false;
-  }
-  else {
-    Serial.print("Unexpected ACK response: ");
-    Serial.println(line.length() ? line : "<timeout>");
-    return false;
-  }
+
+  return -1;
 }
 
 // ---------- RN2483 command helpers ----------
+String makeDevicePacket(uint32_t deviceId, uint8_t value) {
+  uint8_t packet[5];
+
+  // Store the 32-bit device ID as 4 bytes, most significant byte first.
+  packet[0] = (uint8_t)((deviceId >> 24) & 0xFF);
+  packet[1] = (uint8_t)((deviceId >> 16) & 0xFF);
+  packet[2] = (uint8_t)((deviceId >> 8) & 0xFF);
+  packet[3] = (uint8_t)(deviceId & 0xFF);
+  packet[4] = value;
+
+  return bytesToHex(packet, 5);
+}
+
 String sendLoRaCommand(const String& cmd, int timeoutMs) {
   Serial.print("RN2483 <= ");
   Serial.println(cmd);
