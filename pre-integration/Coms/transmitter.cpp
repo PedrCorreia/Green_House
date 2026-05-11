@@ -52,9 +52,9 @@
 #define LIGHT_CMD_BYTES          6
 #define LIGHT_CMD_HEX_CHARS      12
 
-#define PING_WAIT_MS             30000UL    // listen this long after wake for the gateway ping
+#define PING_WAIT_MS             12000UL    // listen for gateway ping; matches gateway ping interval
 #define POST_TX_RX_MS            8000UL     // listen this long after TX for a light command
-#define SLEEP_SECONDS            60ULL      // deep sleep duration between cycles
+#define SLEEP_SECONDS            105ULL     // sleep + ~3s boot + 12s listen ≈ 120s = gateway ping cycle
 
 HardwareSerial loraSerial(1);
 bool loraReady = false;
