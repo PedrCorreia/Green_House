@@ -70,6 +70,21 @@ static const uint8_t LORA_PING_HEADER[4] = { 0x50, 0x49, 0x4E, 0x47 };  // "PING
 // but filters out noise and rogue nodes that don't know the key.
 static const uint8_t SHARED_KEY[4] = { 0xA3, 0x7F, 0x2C, 0x91 };
 
+// ---------- Approved sensor node device IDs ----------
+// Approved sensor node device IDs. Add each node's DEVICE_ID here.
+static const uint32_t APPROVED_DEVICE_IDS[] = {
+  0x01AABBCC   // sensor node 1
+};
+static const int APPROVED_DEVICE_COUNT =
+    (int)(sizeof(APPROVED_DEVICE_IDS) / sizeof(APPROVED_DEVICE_IDS[0]));
+
+bool isApprovedDevice(uint32_t id) {
+  for (int i = 0; i < APPROVED_DEVICE_COUNT; i++) {
+    if (APPROVED_DEVICE_IDS[i] == id) return true;
+  }
+  return false;
+}
+
 // ---------- Timing ----------
 #define PING_INTERVAL_MS         120000UL   // auto-ping every 2 min (test)
 #define POST_PING_WAIT_MS        10000UL    // listen this long for a sensor reply
@@ -128,6 +143,7 @@ bool waitForSensorReply(int timeoutMs);
 bool parseSensorPayload(const String& hexStr, SensorData& out);
 void publishSensorData(const SensorData& d, bool needsLight);
 bool sendLightCommand(uint32_t targetDeviceId, uint16_t desiredLux);
+bool isApprovedDevice(uint32_t id);
 
 bool   hexToBytes(const String& hexStr, uint8_t* out, size_t outLen);
 String bytesToHex(const uint8_t* data, size_t len);
@@ -477,6 +493,12 @@ bool waitForSensorReply(int timeoutMs) {
     SensorData d;
     if (!parseSensorPayload(hex, d)) {
       Serial.println("Bad payload, ignoring.");
+      return false;
+    }
+
+    if (!isApprovedDevice(d.deviceId)) {
+      Serial.print("Rejected: unknown device 0x");
+      Serial.println(d.deviceId, HEX);
       return false;
     }
 
