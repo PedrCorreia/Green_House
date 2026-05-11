@@ -59,7 +59,8 @@
 #define LORA_WDT         60000UL       // RX watchdog ms; 0 = no timeout
 
 // ---------- Protocol ----------
-#define LORA_PING_HEX            "50494E47"   // "PING" in ASCII hex
+static const uint8_t LORA_PING_HEADER[4] = { 0x50, 0x49, 0x4E, 0x47 };  // "PING"
+#define LORA_PING_BYTES          8   // header (4) + shared key (4)
 #define SENSOR_PAYLOAD_BYTES     13
 #define SENSOR_PAYLOAD_HEX_CHARS 26
 #define LIGHT_CMD_BYTES          6
@@ -427,7 +428,12 @@ bool sendPing(const char* reason) {
   Serial.print(reason);
   Serial.println(")");
 
-  String cmd = String("radio tx ") + LORA_PING_HEX;
+  uint8_t pingBuf[LORA_PING_BYTES];
+  memcpy(pingBuf, LORA_PING_HEADER, 4);
+  memcpy(pingBuf + 4, SHARED_KEY, 4);
+  String pingHex = bytesToHex(pingBuf, LORA_PING_BYTES);
+
+  String cmd = String("radio tx ") + pingHex;
   String firstReply = sendLoRaCommand(cmd, 2000);
 
   if (firstReply != "ok") {
@@ -436,7 +442,6 @@ bool sendPing(const char* reason) {
     return false;
   }
 
-  // Second reply: radio_tx_ok when transmission finishes.
   String txDone = readLoRaLine(10000);
   Serial.print("RN2483 => ");
   Serial.println(txDone.length() ? txDone : "<timeout>");
