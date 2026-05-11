@@ -52,12 +52,21 @@
 #define LIGHT_CMD_BYTES          6
 #define LIGHT_CMD_HEX_CHARS      12
 
+// ---------- Shared secret ----------
+static const uint8_t SHARED_KEY[4] = { 0xA3, 0x7F, 0x2C, 0x91 };
+
 #define PING_WAIT_MS             12000UL    // listen for gateway ping; matches gateway ping interval
 #define POST_TX_RX_MS            8000UL     // listen this long after TX for a light command
 #define SLEEP_SECONDS            105ULL     // sleep + ~3s boot + 12s listen ≈ 120s = gateway ping cycle
 
 HardwareSerial loraSerial(1);
 bool loraReady = false;
+
+void xorWithKey(uint8_t* data, size_t len) {
+  for (size_t i = 0; i < len; i++) {
+    data[i] ^= SHARED_KEY[i % 4];
+  }
+}
 
 struct SensorReading {
   int16_t  tempTenthsC;     // tenths of °C
@@ -86,6 +95,7 @@ bool parseLightCommand(const String& hex, uint32_t& targetIdOut, uint16_t& desir
 bool   hexToBytes(const String& hexStr, uint8_t* out, size_t outLen);
 String bytesToHex(const uint8_t* data, size_t len);
 int    hexNibble(char c);
+void xorWithKey(uint8_t* data, size_t len);
 
 void goToDeepSleep();
 

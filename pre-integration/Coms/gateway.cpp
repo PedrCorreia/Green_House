@@ -64,6 +64,11 @@
 #define SENSOR_PAYLOAD_HEX_CHARS 26
 #define LIGHT_CMD_BYTES          6
 
+// ---------- Shared secret ----------
+// Must match transmitter. XOR-obfuscates payloads; not cryptographically strong
+// but filters out noise and rogue nodes that don't know the key.
+static const uint8_t SHARED_KEY[4] = { 0xA3, 0x7F, 0x2C, 0x91 };
+
 // ---------- Timing ----------
 #define PING_INTERVAL_MS         120000UL   // auto-ping every 2 min (test)
 #define POST_PING_WAIT_MS        10000UL    // listen this long for a sensor reply
@@ -86,6 +91,12 @@ bool ledState  = false;
 unsigned long lastPingTime = 0;
 unsigned long lastHeartbeatTime = 0;
 unsigned long lastMqttReconnectAttempt = 0;
+
+void xorWithKey(uint8_t* data, size_t len) {
+  for (size_t i = 0; i < len; i++) {
+    data[i] ^= SHARED_KEY[i % 4];
+  }
+}
 
 struct SensorData {
   uint32_t deviceId;
@@ -120,6 +131,7 @@ bool sendLightCommand(uint32_t targetDeviceId, uint16_t desiredLux);
 bool   hexToBytes(const String& hexStr, uint8_t* out, size_t outLen);
 String bytesToHex(const uint8_t* data, size_t len);
 int    hexNibble(char c);
+void xorWithKey(uint8_t* data, size_t len);
 
 
 // =================================================================
