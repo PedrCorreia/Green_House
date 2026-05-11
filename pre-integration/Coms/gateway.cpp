@@ -490,9 +490,17 @@ bool waitForSensorReply(int timeoutMs) {
     Serial.print("RX payload hex: ");
     Serial.println(hex);
 
+    uint8_t raw[SENSOR_PAYLOAD_BYTES];
+    if (hex.length() != SENSOR_PAYLOAD_HEX_CHARS || !hexToBytes(hex, raw, SENSOR_PAYLOAD_BYTES)) {
+      Serial.println("Bad payload length or hex decode failed.");
+      return false;
+    }
+    xorWithKey(raw, SENSOR_PAYLOAD_BYTES);
+    String decryptedHex = bytesToHex(raw, SENSOR_PAYLOAD_BYTES);
+
     SensorData d;
-    if (!parseSensorPayload(hex, d)) {
-      Serial.println("Bad payload, ignoring.");
+    if (!parseSensorPayload(decryptedHex, d)) {
+      Serial.println("Bad payload after decryption (wrong key?).");
       return false;
     }
 
