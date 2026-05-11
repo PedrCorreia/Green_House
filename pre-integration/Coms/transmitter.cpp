@@ -53,6 +53,8 @@
 #define LIGHT_CMD_HEX_CHARS      12
 
 // ---------- Shared secret ----------
+// Must match gateway. XOR-obfuscates payloads; not cryptographically strong
+// but filters out noise and rogue nodes that don't know the key.
 static const uint8_t SHARED_KEY[4] = { 0xA3, 0x7F, 0x2C, 0x91 };
 
 #define PING_WAIT_MS             12000UL    // listen for gateway ping; matches gateway ping interval
