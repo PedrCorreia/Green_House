@@ -47,7 +47,6 @@
 
 
 #define DEVICE_ID                0x01AABBCC   // top byte 0x01 = sensor node
-#define LORA_PING_HEX            "50494E47"   // "PING"
 #define SENSOR_PAYLOAD_BYTES     13
 #define LIGHT_CMD_BYTES          6
 #define LIGHT_CMD_HEX_CHARS      12
@@ -56,6 +55,7 @@
 // Must match gateway. XOR-obfuscates payloads; not cryptographically strong
 // but filters out noise and rogue nodes that don't know the key.
 static const uint8_t SHARED_KEY[4] = { 0xA3, 0x7F, 0x2C, 0x91 };
+static const uint8_t LORA_PING_HEADER[4] = { 0x50, 0x49, 0x4E, 0x47 };  // "PING"
 
 #define PING_WAIT_MS             12000UL    // listen for gateway ping; matches gateway ping interval
 #define POST_TX_RX_MS            8000UL     // listen this long after TX for a light command
@@ -90,6 +90,9 @@ void   stopRx();
 bool receivePacket(int timeoutMs, String& payloadHexOut);
 bool sendPayload(const String& hex);
 
+bool isValidPing(const String& hex);
+bool waitForValidPing(int timeoutMs);
+
 SensorReading readSensorData();
 void buildSensorPayload(const SensorReading& r, uint8_t* out13);
 bool parseLightCommand(const String& hex, uint32_t& targetIdOut, uint16_t& desiredLuxOut);
@@ -101,6 +104,35 @@ void xorWithKey(uint8_t* data, size_t len);
 
 void goToDeepSleep();
 
+
+bool isValidPing(const String& hex) {
+  if (hex.length() < 16) return false;
+  uint8_t b[8];
+  if (!hexToBytes(hex.substring(0, 16), b, 8)) return false;
+  if (b[0] != LORA_PING_HEADER[0] || b[1] != LORA_PING_HEADER[1] ||
+      b[2] != LORA_PING_HEADER[2] || b[3] != LORA_PING_HEADER[3]) return false;
+  for (int i = 0; i < 4; i++) {
+    if (b[4 + i] != SHARED_KEY[i]) return false;
+  }
+  return true;
+}
+
+bool waitForValidPing(int timeoutMs) {
+  unsigned long deadline = millis() + (unsigned long)timeoutMs;
+  while (millis() < deadline) {
+    int remaining = (int)(deadline - millis());
+    if (remaining <= 100) break;
+    String hex;
+    if (!receivePacket(remaining, hex)) break;
+    if (isValidPing(hex)) {
+      Serial.println("Valid PING received.");
+      return true;
+    }
+    Serial.print("Rejected packet (key mismatch or not PING): ");
+    Serial.println(hex);
+  }
+  return false;
+}
 
 // =================================================================
 void setup() {
@@ -129,19 +161,9 @@ void setup() {
   Serial.print(PING_WAIT_MS);
   Serial.println(" ms)...");
 
-  String pingHex;
-  bool gotPing = receivePacket(PING_WAIT_MS, pingHex);
-
-  if (!gotPing) {
-    Serial.println("No ping received. Going back to sleep.");
+  if (!waitForValidPing(PING_WAIT_MS)) {
+    Serial.println("No valid ping received. Going back to sleep.");
     goToDeepSleep();
-  }
-
-  Serial.print("Received: ");
-  Serial.println(pingHex);
-
-  if (!pingHex.equalsIgnoreCase(LORA_PING_HEX)) {
-    Serial.println("(Not literal PING, but treating it as a wake trigger.)");
   }
 
   // 2) Read sensors (currently mock) and build the payload.
