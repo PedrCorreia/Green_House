@@ -606,6 +606,7 @@ bool sendLightCommand(uint32_t targetDeviceId, uint16_t desiredLux) {
   b[4] = (desiredLux >> 8)      & 0xFF;
   b[5] =  desiredLux            & 0xFF;
 
+  xorWithKey(b, LIGHT_CMD_BYTES);
   String hex = bytesToHex(b, LIGHT_CMD_BYTES);
   String cmd = String("radio tx ") + hex;
 

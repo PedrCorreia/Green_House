@@ -191,24 +191,29 @@ void setup() {
   Serial.println("Listening for light command...");
   String cmdHex;
   if (receivePacket(POST_TX_RX_MS, cmdHex)) {
+    uint8_t cmdRaw[LIGHT_CMD_BYTES];
     uint32_t targetId;
     uint16_t desiredLux;
-    if (parseLightCommand(cmdHex, targetId, desiredLux)) {
-      if (targetId == DEVICE_ID) {
-        Serial.print("Light command for us. desiredLux=");
-        Serial.println(desiredLux);
-        digitalWrite(LED_PIN, desiredLux > 0 ? HIGH : LOW);
-        // Hold the LED state visibly for a moment before sleeping.
-        // Deep sleep will turn it off again — that's expected; this is just
-        // a demo so you can see it light up before the chip powers down.
-        delay(500);
+    if (cmdHex.length() == LIGHT_CMD_HEX_CHARS &&
+        hexToBytes(cmdHex, cmdRaw, LIGHT_CMD_BYTES)) {
+      xorWithKey(cmdRaw, LIGHT_CMD_BYTES);
+      String decryptedCmd = bytesToHex(cmdRaw, LIGHT_CMD_BYTES);
+      if (parseLightCommand(decryptedCmd, targetId, desiredLux)) {
+        if (targetId == DEVICE_ID) {
+          Serial.print("Light command for us. desiredLux=");
+          Serial.println(desiredLux);
+          digitalWrite(LED_PIN, desiredLux > 0 ? HIGH : LOW);
+          delay(500);
+        } else {
+          Serial.print("Light command was for device 0x");
+          Serial.print(targetId, HEX);
+          Serial.println(", not us. Ignoring.");
+        }
       } else {
-        Serial.print("Light command was for device 0x");
-        Serial.print(targetId, HEX);
-        Serial.println(", not us. Ignoring.");
+        Serial.println("Got a packet but it wasn't a valid light command.");
       }
     } else {
-      Serial.println("Got a packet but it wasn't a valid light command.");
+      Serial.println("Light cmd: bad length or hex decode failed.");
     }
   } else {
     Serial.println("No command received.");
