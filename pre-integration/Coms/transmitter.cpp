@@ -176,6 +176,7 @@ void setup() {
 
   uint8_t payload[SENSOR_PAYLOAD_BYTES];
   buildSensorPayload(r, payload);
+  xorWithKey(payload, SENSOR_PAYLOAD_BYTES);
   String payloadHex = bytesToHex(payload, SENSOR_PAYLOAD_BYTES);
   Serial.print("TX payload: ");
   Serial.println(payloadHex);
