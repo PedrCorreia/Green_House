@@ -120,10 +120,13 @@ bool isValidPing(const String& hex) {
 bool waitForValidPing(int timeoutMs) {
   unsigned long deadline = millis() + (unsigned long)timeoutMs;
   while (millis() < deadline) {
-    int remaining = (int)(deadline - millis());
+    long remaining = (long)(deadline - millis());
     if (remaining <= 100) break;
     String hex;
-    if (!receivePacket(remaining, hex)) break;
+    if (!receivePacket((int)remaining, hex)) {
+      Serial.println("RX error; retrying within window.");
+      continue;
+    }
     if (isValidPing(hex)) {
       Serial.println("Valid PING received.");
       return true;
