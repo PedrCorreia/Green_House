@@ -63,7 +63,7 @@ static const uint8_t LORA_PING_HEADER[4] = { 0x50, 0x49, 0x4E, 0x47 };  // "PING
 #define LORA_PING_BYTES          8   // header (4) + shared key (4)
 #define SENSOR_PAYLOAD_BYTES     13
 #define SENSOR_PAYLOAD_HEX_CHARS 26
-#define LIGHT_CMD_BYTES          6
+#define LIGHT_CMD_BYTES          8
 
 // ---------- Shared secret ----------
 // Must match transmitter. XOR-obfuscates payloads; not cryptographically strong
@@ -90,6 +90,11 @@ bool isApprovedDevice(uint32_t id) {
 #define POST_PING_WAIT_MS        10000UL    // listen this long for a sensor reply
 #define HEARTBEAT_INTERVAL_MS    60000UL
 #define MQTT_RECONNECT_INTERVAL  3000UL
+#define BOOT_OVERHEAD_MS         3000UL
+#define MIN_SLEEP_S              10UL
+#define MAX_SLEEP_S              65000UL
+#define MANUAL_PING_TIMEOUT_MS   150000UL
+#define RETRY_INTERVAL_MS        15000UL
 // Small gap before sending the light command, so the sensor node's
 // post-TX RX window is definitely open by the time we transmit.
 #define LIGHT_CMD_PRE_DELAY_MS   400
@@ -139,10 +144,12 @@ void   flushLoRaInput();
 void   stopRx();
 
 bool sendPing(const char* reason);
+bool manualPingWithRetry();
 bool waitForSensorReply(int timeoutMs);
 bool parseSensorPayload(const String& hexStr, SensorData& out);
 void publishSensorData(const SensorData& d, bool needsLight);
-bool sendLightCommand(uint32_t targetDeviceId, uint16_t desiredLux);
+uint16_t calculateNextSleepSeconds();
+bool sendLightCommand(uint32_t targetDeviceId, uint16_t desiredLux, uint16_t nextSleepS);
 bool isApprovedDevice(uint32_t id);
 
 bool   hexToBytes(const String& hexStr, uint8_t* out, size_t outLen);
@@ -282,9 +289,9 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
 
   if (t == TOPIC_PING) {
     if (msg.equalsIgnoreCase("PING")) {
-      bool ok = sendPing("manual MQTT");
+      bool ok = manualPingWithRetry();
       mqttClient.publish(TOPIC_STATUS,
-        ok ? "Manual LoRa PING sent" : "Manual LoRa PING failed");
+        ok ? "Manual LoRa PING received a sensor reply" : "Manual LoRa PING retry window expired");
     } else {
       mqttClient.publish(TOPIC_STATUS, "Unknown ping command received; expected PING");
     }
@@ -466,8 +473,52 @@ bool sendPing(const char* reason) {
     Serial.println("TX did not complete cleanly.");
     return false;
   }
-  waitForSensorReply(POST_PING_WAIT_MS);
-  return true;
+  return waitForSensorReply(POST_PING_WAIT_MS);
+}
+
+bool manualPingWithRetry() {
+  unsigned long originalLastPingTime = lastPingTime;
+  unsigned long start = millis();
+  int attempt = 1;
+
+  Serial.println("Manual PING retry loop starting.");
+
+  while (millis() - start < MANUAL_PING_TIMEOUT_MS) {
+    unsigned long attemptStart = millis();
+    lastPingTime = attemptStart;
+
+    Serial.print("Manual PING attempt ");
+    Serial.println(attempt);
+
+    if (sendPing("manual MQTT retry")) {
+      lastPingTime = attemptStart;
+      Serial.println("Manual PING succeeded; sync anchor updated.");
+      return true;
+    }
+
+    unsigned long elapsed = millis() - attemptStart;
+    unsigned long totalElapsed = millis() - start;
+    if (totalElapsed >= MANUAL_PING_TIMEOUT_MS) {
+      break;
+    }
+
+    if (elapsed < RETRY_INTERVAL_MS) {
+      unsigned long waitMs = RETRY_INTERVAL_MS - elapsed;
+      if (totalElapsed + waitMs > MANUAL_PING_TIMEOUT_MS) {
+        waitMs = MANUAL_PING_TIMEOUT_MS - totalElapsed;
+      }
+      Serial.print("Manual PING retry wait ");
+      Serial.print(waitMs);
+      Serial.println(" ms.");
+      delay(waitMs);
+    }
+
+    attempt++;
+  }
+
+  lastPingTime = originalLastPingTime;
+  Serial.println("Manual PING retry window expired without a valid reply.");
+  return false;
 }
 
 bool waitForSensorReply(int timeoutMs) {
@@ -511,15 +562,17 @@ bool waitForSensorReply(int timeoutMs) {
     }
 
     bool needsLight = (d.lux < LIGHT_THRESHOLD_LUX);
+    uint16_t nextSleepS = calculateNextSleepSeconds();
     publishSensorData(d, needsLight);
 
+    // Give the sensor node a moment to switch from TX to RX before we transmit.
+    delay(LIGHT_CMD_PRE_DELAY_MS);
     if (needsLight) {
-      // Give the sensor node a moment to switch from TX to RX before we transmit.
-      delay(LIGHT_CMD_PRE_DELAY_MS);
-      Serial.println("Lux below threshold -> sending light ON command.");
-      sendLightCommand(d.deviceId, DESIRED_LUX_WHEN_DARK);
+      Serial.println("Lux below threshold -> sending light/sync command.");
+      sendLightCommand(d.deviceId, DESIRED_LUX_WHEN_DARK, nextSleepS);
     } else {
-      Serial.println("Light OK, no command sent.");
+      Serial.println("Light OK -> sending sync-only command.");
+      sendLightCommand(d.deviceId, 0, nextSleepS);
     }
     return true;
   }
@@ -595,7 +648,20 @@ void publishSensorData(const SensorData& d, bool needsLight) {
 }
 
 
-bool sendLightCommand(uint32_t targetDeviceId, uint16_t desiredLux) {
+uint16_t calculateNextSleepSeconds() {
+  int32_t nextPingMs = (int32_t)((lastPingTime + PING_INTERVAL_MS) - millis());
+  int32_t sleepMs = nextPingMs - (int32_t)BOOT_OVERHEAD_MS;
+  int32_t sleepS = sleepMs / 1000;
+
+  if (sleepS < (int32_t)MIN_SLEEP_S) sleepS = MIN_SLEEP_S;
+  if (sleepS > (int32_t)MAX_SLEEP_S) sleepS = MAX_SLEEP_S;
+
+  Serial.print("Computed nextSleepS=");
+  Serial.println(sleepS);
+  return (uint16_t)sleepS;
+}
+
+bool sendLightCommand(uint32_t targetDeviceId, uint16_t desiredLux, uint16_t nextSleepS) {
   if (!loraReady) return false;
 
   uint8_t b[LIGHT_CMD_BYTES];
@@ -605,10 +671,19 @@ bool sendLightCommand(uint32_t targetDeviceId, uint16_t desiredLux) {
   b[3] =  targetDeviceId        & 0xFF;
   b[4] = (desiredLux >> 8)      & 0xFF;
   b[5] =  desiredLux            & 0xFF;
+  b[6] = (nextSleepS >> 8)      & 0xFF;
+  b[7] =  nextSleepS            & 0xFF;
 
   xorWithKey(b, LIGHT_CMD_BYTES);
   String hex = bytesToHex(b, LIGHT_CMD_BYTES);
   String cmd = String("radio tx ") + hex;
+
+  Serial.print("Light/sync cmd desiredLux=");
+  Serial.print(desiredLux);
+  Serial.print(" nextSleepS=");
+  Serial.print(nextSleepS);
+  Serial.print(" hex=");
+  Serial.println(hex);
 
   String first = sendLoRaCommand(cmd, 2000);
   if (first != "ok") {

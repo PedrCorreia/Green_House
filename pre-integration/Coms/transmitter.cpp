@@ -15,7 +15,7 @@
     2. Have the gateway running. Within PING_WAIT_MS the node should
        receive the ping, transmit a (mock) reading, and either turn its
        LED on or stay dark depending on the lux value picked.
-    3. Then it sleeps for SLEEP_SECONDS and the cycle repeats.
+    3. Then it sleeps for the gateway-provided RTC sleep duration and the cycle repeats.
 
 
 */
@@ -48,8 +48,8 @@
 
 #define DEVICE_ID                0x01AABBCC   // top byte 0x01 = sensor node
 #define SENSOR_PAYLOAD_BYTES     13
-#define LIGHT_CMD_BYTES          6
-#define LIGHT_CMD_HEX_CHARS      12
+#define LIGHT_CMD_BYTES          8
+#define LIGHT_CMD_HEX_CHARS      16
 
 // ---------- Shared secret ----------
 // Must match gateway. XOR-obfuscates payloads; not cryptographically strong
@@ -59,10 +59,11 @@ static const uint8_t LORA_PING_HEADER[4] = { 0x50, 0x49, 0x4E, 0x47 };  // "PING
 
 #define PING_WAIT_MS             12000UL    // listen for gateway ping; matches gateway ping interval
 #define POST_TX_RX_MS            8000UL     // listen this long after TX for a light command
-#define SLEEP_SECONDS            105ULL     // sleep + ~3s boot + 12s listen ≈ 120s = gateway ping cycle
+#define DEFAULT_SLEEP_S          115UL      // fallback before the first gateway sync hint
 
 HardwareSerial loraSerial(1);
 bool loraReady = false;
+RTC_DATA_ATTR uint32_t rtcSleepSeconds = DEFAULT_SLEEP_S;
 
 void xorWithKey(uint8_t* data, size_t len) {
   for (size_t i = 0; i < len; i++) {
@@ -95,7 +96,10 @@ bool waitForValidPing(int timeoutMs);
 
 SensorReading readSensorData();
 void buildSensorPayload(const SensorReading& r, uint8_t* out13);
-bool parseLightCommand(const String& hex, uint32_t& targetIdOut, uint16_t& desiredLuxOut);
+bool parseLightCommand(const String& hex,
+                       uint32_t& targetIdOut,
+                       uint16_t& desiredLuxOut,
+                       uint16_t& nextSleepSOut);
 
 bool   hexToBytes(const String& hexStr, uint8_t* out, size_t outLen);
 String bytesToHex(const uint8_t* data, size_t len);
@@ -194,16 +198,33 @@ void setup() {
     uint8_t cmdRaw[LIGHT_CMD_BYTES];
     uint32_t targetId;
     uint16_t desiredLux;
+    uint16_t nextSleepS;
     if (cmdHex.length() == LIGHT_CMD_HEX_CHARS &&
         hexToBytes(cmdHex, cmdRaw, LIGHT_CMD_BYTES)) {
       xorWithKey(cmdRaw, LIGHT_CMD_BYTES);
       String decryptedCmd = bytesToHex(cmdRaw, LIGHT_CMD_BYTES);
-      if (parseLightCommand(decryptedCmd, targetId, desiredLux)) {
+      if (parseLightCommand(decryptedCmd, targetId, desiredLux, nextSleepS)) {
         if (targetId == DEVICE_ID) {
           Serial.print("Light command for us. desiredLux=");
-          Serial.println(desiredLux);
-          digitalWrite(LED_PIN, desiredLux > 0 ? HIGH : LOW);
-          delay(500);
+          Serial.print(desiredLux);
+          Serial.print(" nextSleepS=");
+          Serial.println(nextSleepS);
+
+          if (desiredLux > 0) {
+            digitalWrite(LED_PIN, HIGH);
+            delay(500);
+          } else {
+            Serial.println("desiredLux=0 -> leaving LED state unchanged.");
+          }
+
+          if (nextSleepS > 0) {
+            rtcSleepSeconds = nextSleepS;
+            Serial.print("Updated RTC sleep duration to ");
+            Serial.print(rtcSleepSeconds);
+            Serial.println(" s.");
+          } else {
+            Serial.println("nextSleepS=0 -> keeping previous RTC sleep duration.");
+          }
         } else {
           Serial.print("Light command was for device 0x");
           Serial.print(targetId, HEX);
@@ -438,7 +459,10 @@ void buildSensorPayload(const SensorReading& r, uint8_t* out13) {
 }
 
 
-bool parseLightCommand(const String& hex, uint32_t& targetIdOut, uint16_t& desiredLuxOut) {
+bool parseLightCommand(const String& hex,
+                       uint32_t& targetIdOut,
+                       uint16_t& desiredLuxOut,
+                       uint16_t& nextSleepSOut) {
   if (hex.length() != LIGHT_CMD_HEX_CHARS) return false;
 
   uint8_t b[LIGHT_CMD_BYTES];
@@ -447,6 +471,7 @@ bool parseLightCommand(const String& hex, uint32_t& targetIdOut, uint16_t& desir
   targetIdOut = ((uint32_t)b[0] << 24) | ((uint32_t)b[1] << 16) |
                 ((uint32_t)b[2] << 8)  |  (uint32_t)b[3];
   desiredLuxOut = ((uint16_t)b[4] << 8) | b[5];
+  nextSleepSOut = ((uint16_t)b[6] << 8) | b[7];
   return true;
 }
 
@@ -488,11 +513,10 @@ void goToDeepSleep() {
   stopRx();
 
   Serial.print("Sleeping for ");
-  Serial.print((unsigned long)SLEEP_SECONDS);
+  Serial.print((unsigned long)rtcSleepSeconds);
   Serial.println(" s. See you on the other side.");
   Serial.flush();
 
-  digitalWrite(LED_PIN, LOW);
-  esp_sleep_enable_timer_wakeup(SLEEP_SECONDS * 1000000ULL);
+  esp_sleep_enable_timer_wakeup((uint64_t)rtcSleepSeconds * 1000000ULL);
   esp_deep_sleep_start();
 }
