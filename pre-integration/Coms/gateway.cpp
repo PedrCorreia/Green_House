@@ -145,6 +145,7 @@ bool isApprovedDevice(uint32_t id);
 void checkBootButton();
 void pollButton();
 void runBleProvisioning();
+void runLoraPairingMode();
 void connectToWiFi(const String& ssid, const String& pass);
 void ensureWiFiConnected();
 bool connectToMQTT();
@@ -362,8 +363,14 @@ void setup() {
   checkBootButton();
 
   String wifiSsid, wifiPass;
-  loadWifiCreds(wifiSsid, wifiPass);
+  bool hasCredentials = loadWifiCreds(wifiSsid, wifiPass);
+  bool reprovision    = getReprovisionFlag();
   loadApprovedNodes();
+
+  if (!hasCredentials || reprovision) {
+      runBleProvisioning();   // never returns; reboots on success
+  }
+
   connectToWiFi(wifiSsid, wifiPass);
 
   mqttClient.setServer(MQTT_BROKER, MQTT_PORT);
@@ -373,6 +380,10 @@ void setup() {
   if (!initLoRa()) {
     Serial.println("RN2483 init failed. Halting (gateway must not run with broken radio).");
     while (true) { delay(1000); }
+  }
+
+  if (pairingMode) {
+      runLoraPairingMode();   // runs 60 s then returns
   }
 
   lastPingTime      = millis();
