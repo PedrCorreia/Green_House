@@ -50,6 +50,18 @@
 #define SENSOR_PAYLOAD_BYTES     13
 #define LIGHT_CMD_BYTES          8
 #define LIGHT_CMD_HEX_CHARS      16
+#define REGISTRATION_MODE_PIN    0
+#define LORA_REGISTER_BYTES      12
+#define LORA_REGISTER_HEX_CHARS  24
+#define LORA_ACK_BYTES            8
+#define LORA_ACK_HEX_CHARS       16
+#define REGISTER_MAX_RETRIES      3
+#define REGISTER_ACK_WAIT_MS   5000UL
+
+static const uint8_t LORA_REG_HEADER[4] = { 0x52, 0x45, 0x47, 0x00 };
+static const uint8_t LORA_ACK_HEADER[4] = { 0x41, 0x43, 0x4B, 0x00 };
+
+static bool registrationMode = false;
 
 // ---------- Shared secret ----------
 // Must match gateway. XOR-obfuscates payloads; not cryptographically strong
@@ -82,6 +94,10 @@ struct SensorReading {
 };
 
 // ---------- Forward decls ----------
+void checkBootButton();
+bool sendRegisterPacket();
+bool waitForRegisterAck();
+
 bool   initLoRa();
 String sendLoRaCommand(const String& cmd, int timeoutMs);
 String readLoRaLine(int timeoutMs);
@@ -108,6 +124,46 @@ void xorWithKey(uint8_t* data, size_t len);
 
 void goToDeepSleep();
 
+
+void checkBootButton() {
+    pinMode(REGISTRATION_MODE_PIN, INPUT_PULLUP);
+    if (digitalRead(REGISTRATION_MODE_PIN) == LOW) {
+        registrationMode = true;
+        Serial.println("Button held: entering registration mode.");
+    }
+}
+
+bool sendRegisterPacket() {
+    uint8_t pkt[LORA_REGISTER_BYTES];
+    memcpy(pkt, LORA_REG_HEADER, 4);
+    pkt[4] = (DEVICE_ID >> 24) & 0xFF;
+    pkt[5] = (DEVICE_ID >> 16) & 0xFF;
+    pkt[6] = (DEVICE_ID >>  8) & 0xFF;
+    pkt[7] =  DEVICE_ID        & 0xFF;
+    pkt[8] = pkt[9] = pkt[10] = pkt[11] = 0x00;
+
+    xorWithKey(pkt, LORA_REGISTER_BYTES);
+    String hex = bytesToHex(pkt, LORA_REGISTER_BYTES);
+    Serial.print("Sending REGISTER: "); Serial.println(hex);
+    return sendPayload(hex);
+}
+
+bool waitForRegisterAck() {
+    String hex;
+    if (!receivePacket((int)REGISTER_ACK_WAIT_MS, hex)) return false;
+    if (hex.length() != LORA_ACK_HEX_CHARS) return false;
+
+    uint8_t raw[LORA_ACK_BYTES];
+    if (!hexToBytes(hex, raw, LORA_ACK_BYTES)) return false;
+    xorWithKey(raw, LORA_ACK_BYTES);
+
+    if (raw[0] != LORA_ACK_HEADER[0] || raw[1] != LORA_ACK_HEADER[1] ||
+        raw[2] != LORA_ACK_HEADER[2] || raw[3] != LORA_ACK_HEADER[3]) return false;
+
+    uint32_t ackedId = ((uint32_t)raw[4] << 24) | ((uint32_t)raw[5] << 16) |
+                       ((uint32_t)raw[6] <<  8) |  (uint32_t)raw[7];
+    return (ackedId == DEVICE_ID);
+}
 
 bool isValidPing(const String& hex) {
   if (hex.length() < 16) return false;
@@ -152,6 +208,8 @@ void setup() {
   Serial.println();
   Serial.println("=== Sensor node waking ===");
 
+  checkBootButton();
+
   // esp_random() is hardware-backed and works right after reset.
   // Good enough for picking a mock scenario.
   randomSeed(esp_random());
@@ -170,6 +228,28 @@ void setup() {
 
   if (!waitForValidPing(PING_WAIT_MS)) {
     Serial.println("No valid ping received. Going back to sleep.");
+    goToDeepSleep();
+  }
+
+  // 2a) If in registration mode, send REGISTER packet and sleep.
+  if (registrationMode) {
+    bool registered = false;
+    for (int attempt = 1; attempt <= REGISTER_MAX_RETRIES && !registered; attempt++) {
+      Serial.print("Registration attempt "); Serial.println(attempt);
+      if (!sendRegisterPacket()) {
+        Serial.println("TX failed.");
+        continue;
+      }
+      if (waitForRegisterAck()) {
+        Serial.println("Registration OK. Gateway has our ID.");
+        registered = true;
+      } else {
+        Serial.println("No ACK received.");
+      }
+    }
+    if (!registered) {
+      Serial.println("Registration failed after all retries.");
+    }
     goToDeepSleep();
   }
 
