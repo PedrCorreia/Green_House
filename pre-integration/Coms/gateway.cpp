@@ -142,6 +142,7 @@ bool saveApprovedNode(uint32_t id);
 bool isApprovedDevice(uint32_t id);
 
 void checkBootButton();
+void pollButton();
 void connectToWiFi(const String& ssid, const String& pass);
 void ensureWiFiConnected();
 bool connectToMQTT();
@@ -297,9 +298,32 @@ void setup() {
   Serial.println("Gateway ready.");
 }
 
+void pollButton() {
+    static bool          wasPressed = false;
+    static unsigned long pressStart = 0;
+
+    bool pressed = (digitalRead(BUTTON_PIN) == LOW);
+
+    if (pressed && !wasPressed) {
+        pressStart = millis();
+        wasPressed = true;
+    } else if (!pressed && wasPressed) {
+        unsigned long held = millis() - pressStart;
+        wasPressed = false;
+        if (held >= SHORT_PRESS_MIN_MS && held < 5000UL) {
+            Serial.println("Short press in loop: scheduling BLE re-provision.");
+            prefs.begin(NVS_NAMESPACE, false);
+            prefs.putUChar("reprovision", 1);
+            prefs.end();
+            ESP.restart();
+        }
+    }
+}
+
 // Gateway never sleeps. Keep WiFi/MQTT alive, ping periodically,
 // listen briefly for a reply after each ping.
 void loop() {
+  pollButton();
   ensureWiFiConnected();
 
   unsigned long now = millis();
