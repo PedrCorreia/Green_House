@@ -25,10 +25,18 @@
 #include <WiFi.h>
 #include <PubSubClient.h>
 #include <HardwareSerial.h>
+#include <Preferences.h>
+
+// ---------- NVS ----------
+static Preferences prefs;
+
+#define NVS_NAMESPACE  "greenhouse"
+#define MAX_NODES       16
+
+static uint32_t approvedNodes[MAX_NODES];
+static int      approvedNodeCount = 0;
 
 // ---------- WiFi / MQTT ----------
-#define WIFI_SSID       "!Klosteret"
-#define WIFI_PASSWORD   "Vikar20,21"
 
 #define MQTT_BROKER     "broker.emqx.io"
 #define MQTT_PORT       1883
@@ -70,20 +78,6 @@ static const uint8_t LORA_PING_HEADER[4] = { 0x50, 0x49, 0x4E, 0x47 };  // "PING
 // but filters out noise and rogue nodes that don't know the key.
 static const uint8_t SHARED_KEY[4] = { 0xA3, 0x7F, 0x2C, 0x91 };
 
-// ---------- Approved sensor node device IDs ----------
-// Approved sensor node device IDs. Add each node's DEVICE_ID here.
-static const uint32_t APPROVED_DEVICE_IDS[] = {
-  0x01AABBCC   // sensor node 1
-};
-static const int APPROVED_DEVICE_COUNT =
-    (int)(sizeof(APPROVED_DEVICE_IDS) / sizeof(APPROVED_DEVICE_IDS[0]));
-
-bool isApprovedDevice(uint32_t id) {
-  for (int i = 0; i < APPROVED_DEVICE_COUNT; i++) {
-    if (APPROVED_DEVICE_IDS[i] == id) return true;
-  }
-  return false;
-}
 
 // ---------- Timing ----------
 #define PING_INTERVAL_MS         120000UL   // auto-ping every 2 min (test)
@@ -105,6 +99,9 @@ bool isApprovedDevice(uint32_t id) {
 WiFiClient    espClient;
 PubSubClient  mqttClient(espClient);
 HardwareSerial loraSerial(1);
+
+static String g_wifiSsid;
+static String g_wifiPass;
 
 bool loraReady = false;
 bool ledState  = false;
@@ -130,7 +127,15 @@ struct SensorData {
 };
 
 
-void connectToWiFi();
+bool loadWifiCreds(String& ssid, String& pass);
+void saveWifiCreds(const String& ssid, const String& pass);
+bool getReprovisionFlag();
+void clearReprovisionFlag();
+void loadApprovedNodes();
+bool saveApprovedNode(uint32_t id);
+bool isApprovedDevice(uint32_t id);
+
+void connectToWiFi(const String& ssid, const String& pass);
 void ensureWiFiConnected();
 bool connectToMQTT();
 void mqttCallback(char* topic, byte* payload, unsigned int length);
@@ -150,13 +155,81 @@ bool parseSensorPayload(const String& hexStr, SensorData& out);
 void publishSensorData(const SensorData& d, bool needsLight);
 uint16_t calculateNextSleepSeconds();
 bool sendLightCommand(uint32_t targetDeviceId, uint16_t desiredLux, uint16_t nextSleepS);
-bool isApprovedDevice(uint32_t id);
 
 bool   hexToBytes(const String& hexStr, uint8_t* out, size_t outLen);
 String bytesToHex(const uint8_t* data, size_t len);
 int    hexNibble(char c);
 void xorWithKey(uint8_t* data, size_t len);
 
+
+// ---------- NVS helpers ----------
+
+bool loadWifiCreds(String& ssid, String& pass) {
+    prefs.begin(NVS_NAMESPACE, true);
+    ssid = prefs.getString("wifi_ssid", "");
+    pass = prefs.getString("wifi_pass", "");
+    prefs.end();
+    return ssid.length() > 0;
+}
+
+void saveWifiCreds(const String& ssid, const String& pass) {
+    prefs.begin(NVS_NAMESPACE, false);
+    prefs.putString("wifi_ssid", ssid);
+    prefs.putString("wifi_pass", pass);
+    prefs.end();
+}
+
+bool getReprovisionFlag() {
+    prefs.begin(NVS_NAMESPACE, true);
+    bool val = prefs.getUChar("reprovision", 0) == 1;
+    prefs.end();
+    return val;
+}
+
+void clearReprovisionFlag() {
+    prefs.begin(NVS_NAMESPACE, false);
+    prefs.putUChar("reprovision", 0);
+    prefs.end();
+}
+
+void loadApprovedNodes() {
+    prefs.begin(NVS_NAMESPACE, true);
+    int count = (int)prefs.getUChar("node_count", 0);
+    if (count > MAX_NODES) count = MAX_NODES;
+    approvedNodeCount = count;
+    for (int i = 0; i < approvedNodeCount; i++) {
+        char key[8];
+        snprintf(key, sizeof(key), "node_%d", i);
+        approvedNodes[i] = prefs.getUInt(key, 0);
+    }
+    prefs.end();
+    Serial.print("Loaded ");
+    Serial.print(approvedNodeCount);
+    Serial.println(" approved node(s) from NVS.");
+}
+
+bool saveApprovedNode(uint32_t id) {
+    if (approvedNodeCount >= MAX_NODES) {
+        Serial.println("NVS node list full!");
+        return false;
+    }
+    char key[8];
+    snprintf(key, sizeof(key), "node_%d", approvedNodeCount);
+    prefs.begin(NVS_NAMESPACE, false);
+    prefs.putUInt(key, id);
+    approvedNodeCount++;
+    prefs.putUChar("node_count", (uint8_t)approvedNodeCount);
+    prefs.end();
+    approvedNodes[approvedNodeCount - 1] = id;
+    return true;
+}
+
+bool isApprovedDevice(uint32_t id) {
+    for (int i = 0; i < approvedNodeCount; i++) {
+        if (approvedNodes[i] == id) return true;
+    }
+    return false;
+}
 
 // =================================================================
 void setup() {
@@ -169,7 +242,10 @@ void setup() {
   Serial.println();
   Serial.println("=== Greenhouse Gateway starting ===");
 
-  connectToWiFi();
+  String wifiSsid, wifiPass;
+  loadWifiCreds(wifiSsid, wifiPass);
+  loadApprovedNodes();
+  connectToWiFi(wifiSsid, wifiPass);
 
   mqttClient.setServer(MQTT_BROKER, MQTT_PORT);
   mqttClient.setBufferSize(512);
@@ -215,12 +291,15 @@ void loop() {
   }
 }
 
-void connectToWiFi() {
+void connectToWiFi(const String& ssid, const String& pass) {
+  g_wifiSsid = ssid;
+  g_wifiPass = pass;
+
   Serial.print("Connecting to WiFi: ");
-  Serial.println(WIFI_SSID);
+  Serial.println(ssid);
 
   WiFi.mode(WIFI_STA);
-  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+  WiFi.begin(ssid.c_str(), pass.c_str());
 
   unsigned long start = millis();
   while (WiFi.status() != WL_CONNECTED && millis() - start < 20000UL) {
@@ -246,7 +325,7 @@ void ensureWiFiConnected() {
     lastRetry = now;
     Serial.println("WiFi dropped. Reconnecting...");
     WiFi.disconnect();
-    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+    WiFi.begin(g_wifiSsid.c_str(), g_wifiPass.c_str());
   }
 }
 
