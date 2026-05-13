@@ -79,6 +79,11 @@ static const uint8_t LORA_PING_HEADER[4] = { 0x50, 0x49, 0x4E, 0x47 };  // "PING
 static const uint8_t SHARED_KEY[4] = { 0xA3, 0x7F, 0x2C, 0x91 };
 
 
+// ---------- Button ----------
+#define BUTTON_PIN          0
+#define SHORT_PRESS_MIN_MS  1000UL
+#define LONG_PRESS_MS       3000UL
+
 // ---------- Timing ----------
 #define PING_INTERVAL_MS         120000UL   // auto-ping every 2 min (test)
 #define POST_PING_WAIT_MS        10000UL    // listen this long for a sensor reply
@@ -103,8 +108,9 @@ HardwareSerial loraSerial(1);
 static String g_wifiSsid;
 static String g_wifiPass;
 
-bool loraReady = false;
-bool ledState  = false;
+bool loraReady    = false;
+bool ledState     = false;
+bool pairingMode  = false;
 
 unsigned long lastPingTime = 0;
 unsigned long lastHeartbeatTime = 0;
@@ -135,6 +141,7 @@ void loadApprovedNodes();
 bool saveApprovedNode(uint32_t id);
 bool isApprovedDevice(uint32_t id);
 
+void checkBootButton();
 void connectToWiFi(const String& ssid, const String& pass);
 void ensureWiFiConnected();
 bool connectToMQTT();
@@ -161,6 +168,33 @@ String bytesToHex(const uint8_t* data, size_t len);
 int    hexNibble(char c);
 void xorWithKey(uint8_t* data, size_t len);
 
+
+// ---------- Button ----------
+
+void checkBootButton() {
+    pinMode(BUTTON_PIN, INPUT_PULLUP);
+    if (digitalRead(BUTTON_PIN) == HIGH) return;
+
+    Serial.println("Button held at boot...");
+    unsigned long pressStart = millis();
+
+    while (millis() - pressStart < LONG_PRESS_MS) {
+        if (digitalRead(BUTTON_PIN) == HIGH) {
+            unsigned long held = millis() - pressStart;
+            if (held >= SHORT_PRESS_MIN_MS) {
+                Serial.println("Short press: scheduling BLE re-provision.");
+                prefs.begin(NVS_NAMESPACE, false);
+                prefs.putUChar("reprovision", 1);
+                prefs.end();
+                ESP.restart();
+            }
+            return;
+        }
+        delay(50);
+    }
+    Serial.println("Long press: will enter LoRa pairing mode.");
+    pairingMode = true;
+}
 
 // ---------- NVS helpers ----------
 
@@ -241,6 +275,8 @@ void setup() {
 
   Serial.println();
   Serial.println("=== Greenhouse Gateway starting ===");
+
+  checkBootButton();
 
   String wifiSsid, wifiPass;
   loadWifiCreds(wifiSsid, wifiPass);
