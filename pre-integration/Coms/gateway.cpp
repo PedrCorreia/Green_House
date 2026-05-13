@@ -23,6 +23,7 @@
 
 #include <Arduino.h>
 #include <WiFi.h>
+#include <WiFiProv.h>
 #include <PubSubClient.h>
 #include <HardwareSerial.h>
 #include <Preferences.h>
@@ -143,6 +144,7 @@ bool isApprovedDevice(uint32_t id);
 
 void checkBootButton();
 void pollButton();
+void runBleProvisioning();
 void connectToWiFi(const String& ssid, const String& pass);
 void ensureWiFiConnected();
 bool connectToMQTT();
@@ -169,6 +171,86 @@ String bytesToHex(const uint8_t* data, size_t len);
 int    hexNibble(char c);
 void xorWithKey(uint8_t* data, size_t len);
 
+
+// ---------- BLE Provisioning ----------
+
+static String            provSsid;
+static String            provPass;
+static volatile bool     provComplete = false;
+static volatile bool     provFailed   = false;
+
+static void bleProvEvent(arduino_event_t* event) {
+    switch (event->event_id) {
+        case ARDUINO_EVENT_PROV_START:
+            Serial.println("BLE Prov: open 'ESP BLE Prov' app, scan for GH_Gateway.");
+            break;
+        case ARDUINO_EVENT_PROV_CRED_RECV:
+            provSsid = String((char*)event->event_info.prov_cred_recv.ssid);
+            provPass = String((char*)event->event_info.prov_cred_recv.password);
+            Serial.print("BLE Prov: SSID = "); Serial.println(provSsid);
+            Serial.println("BLE Prov: password received.");
+            break;
+        case ARDUINO_EVENT_PROV_CRED_FAIL:
+            Serial.println("BLE Prov: credential verification failed.");
+            provFailed = true;
+            break;
+        case ARDUINO_EVENT_PROV_CRED_SUCCESS:
+            Serial.println("BLE Prov: credentials verified.");
+            provComplete = true;
+            break;
+        case ARDUINO_EVENT_PROV_END:
+            Serial.println("BLE Prov: provisioning ended.");
+            break;
+        default:
+            break;
+    }
+}
+
+void runBleProvisioning() {
+    Serial.println("=== BLE Provisioning Mode ===");
+    Serial.println("Open 'ESP BLE Prov' app and connect to GH_Gateway.");
+
+    provSsid     = "";
+    provPass     = "";
+    provComplete = false;
+    provFailed   = false;
+
+    WiFi.onEvent(bleProvEvent);
+    WiFiProv.beginProvision(
+        NETWORK_PROV_SCHEME_BLE,
+        NETWORK_PROV_SCHEME_HANDLER_FREE_BLE,
+        NETWORK_PROV_SECURITY_1,
+        "abcd1234",   // proof of possession — shown in the app
+        "GH_Gateway"  // BLE device name
+    );
+
+    unsigned long lastBlink = 0;
+    bool ledOn = false;
+
+    while (!provComplete && !provFailed) {
+        unsigned long now = millis();
+        if (now - lastBlink >= 500UL) {
+            lastBlink = now;
+            ledOn = !ledOn;
+            digitalWrite(LED_PIN, ledOn ? HIGH : LOW);
+        }
+        delay(10);
+    }
+
+    setLed(false);
+
+    if (provComplete && provSsid.length() > 0) {
+        saveWifiCreds(provSsid, provPass);
+        clearReprovisionFlag();
+        Serial.println("BLE Prov: credentials saved. Rebooting...");
+        delay(500);
+        ESP.restart();
+    } else {
+        Serial.println("BLE Prov: failed. Retrying on next boot.");
+        delay(1000);
+        ESP.restart();
+    }
+}
 
 // ---------- Button ----------
 
