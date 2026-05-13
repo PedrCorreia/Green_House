@@ -73,6 +73,15 @@ static const uint8_t LORA_PING_HEADER[4] = { 0x50, 0x49, 0x4E, 0x47 };  // "PING
 #define SENSOR_PAYLOAD_BYTES     13
 #define SENSOR_PAYLOAD_HEX_CHARS 26
 #define LIGHT_CMD_BYTES          8
+#define LORA_REGISTER_BYTES      12
+#define LORA_REGISTER_HEX_CHARS  24
+#define LORA_ACK_BYTES            8
+#define LORA_ACK_HEX_CHARS       16
+#define PAIRING_WINDOW_MS        60000UL
+#define PAIRING_PING_INTERVAL_MS  8000UL
+
+static const uint8_t LORA_REG_HEADER[4] = { 0x52, 0x45, 0x47, 0x00 };  // "REG\0"
+static const uint8_t LORA_ACK_HEADER[4] = { 0x41, 0x43, 0x4B, 0x00 };  // "ACK\0"
 
 // ---------- Shared secret ----------
 // Must match transmitter. XOR-obfuscates payloads; not cryptographically strong
@@ -159,7 +168,9 @@ String readLoRaLine(int timeoutMs);
 void   flushLoRaInput();
 void   stopRx();
 
+bool sendPingTx(const char* reason);
 bool sendPing(const char* reason);
+bool sendRegisterAck(uint32_t deviceId);
 bool manualPingWithRetry();
 bool waitForSensorReply(int timeoutMs);
 bool parseSensorPayload(const String& hexStr, SensorData& out);
@@ -673,13 +684,10 @@ void stopRx() {
 
 
 
-bool sendPing(const char* reason) {
-  if (!loraReady) {
-    Serial.println("sendPing: LoRa not ready");
-    return false;
-  }
+bool sendPingTx(const char* reason) {
+  if (!loraReady) { Serial.println("sendPingTx: LoRa not ready"); return false; }
 
-  Serial.print("Sending PING (");
+  Serial.print("Sending PING TX (");
   Serial.print(reason);
   Serial.println(")");
 
@@ -688,24 +696,110 @@ bool sendPing(const char* reason) {
   memcpy(pingBuf + 4, SHARED_KEY, 4);
   String pingHex = bytesToHex(pingBuf, LORA_PING_BYTES);
 
-  String cmd = String("radio tx ") + pingHex;
-  String firstReply = sendLoRaCommand(cmd, 2000);
-
+  String firstReply = sendLoRaCommand(String("radio tx ") + pingHex, 2000);
   if (firstReply != "ok") {
-    Serial.print("Ping rejected: ");
-    Serial.println(firstReply);
+    Serial.print("Ping TX rejected: "); Serial.println(firstReply);
     return false;
   }
 
   String txDone = readLoRaLine(10000);
-  Serial.print("RN2483 => ");
-  Serial.println(txDone.length() ? txDone : "<timeout>");
+  Serial.print("RN2483 => "); Serial.println(txDone.length() ? txDone : "<timeout>");
+  return (txDone == "radio_tx_ok");
+}
 
-  if (txDone != "radio_tx_ok") {
-    Serial.println("TX did not complete cleanly.");
-    return false;
-  }
+bool sendPing(const char* reason) {
+  if (!sendPingTx(reason)) return false;
   return waitForSensorReply(POST_PING_WAIT_MS);
+}
+
+bool sendRegisterAck(uint32_t deviceId) {
+    uint8_t ack[LORA_ACK_BYTES];
+    memcpy(ack, LORA_ACK_HEADER, 4);
+    ack[4] = (deviceId >> 24) & 0xFF;
+    ack[5] = (deviceId >> 16) & 0xFF;
+    ack[6] = (deviceId >>  8) & 0xFF;
+    ack[7] =  deviceId        & 0xFF;
+    xorWithKey(ack, LORA_ACK_BYTES);
+
+    String ackHex = bytesToHex(ack, LORA_ACK_BYTES);
+    String first  = sendLoRaCommand(String("radio tx ") + ackHex, 2000);
+    if (first != "ok") { Serial.println("ACK TX rejected."); return false; }
+
+    String done = readLoRaLine(10000);
+    Serial.print("ACK TX: "); Serial.println(done.length() ? done : "<timeout>");
+    return (done == "radio_tx_ok");
+}
+
+void runLoraPairingMode() {
+    Serial.println("=== LoRa Pairing Mode (60 s) ===");
+    int registered = 0;
+    unsigned long start    = millis();
+    unsigned long lastPing = 0;
+
+    while (millis() - start < PAIRING_WINDOW_MS) {
+        digitalWrite(LED_PIN, (millis() / 200) % 2 ? HIGH : LOW);
+
+        unsigned long now = millis();
+        if (now - lastPing < PAIRING_PING_INTERVAL_MS) {
+            delay(10);
+            continue;
+        }
+        lastPing = now;
+
+        if (!sendPingTx("pairing")) { delay(500); continue; }
+
+        String first = sendLoRaCommand("radio rx 0", 1500);
+        if (first != "ok") continue;
+
+        String line = readLoRaLine(5000);
+        if (!line.startsWith("radio_rx ")) {
+            if (line != "radio_err") stopRx();
+            continue;
+        }
+
+        String hex = line.substring(9);
+        hex.trim();
+
+        if (hex.length() != LORA_REGISTER_HEX_CHARS) {
+            Serial.print("Pairing: unexpected length "); Serial.println(hex.length());
+            continue;
+        }
+
+        uint8_t raw[LORA_REGISTER_BYTES];
+        if (!hexToBytes(hex, raw, LORA_REGISTER_BYTES)) continue;
+        xorWithKey(raw, LORA_REGISTER_BYTES);
+
+        if (raw[0] != LORA_REG_HEADER[0] || raw[1] != LORA_REG_HEADER[1] ||
+            raw[2] != LORA_REG_HEADER[2] || raw[3] != LORA_REG_HEADER[3]) {
+            Serial.println("Pairing: not a REGISTER header, ignoring.");
+            continue;
+        }
+        if (raw[8] || raw[9] || raw[10] || raw[11]) {
+            Serial.println("Pairing: padding check failed, ignoring.");
+            continue;
+        }
+
+        uint32_t newId = ((uint32_t)raw[4] << 24) | ((uint32_t)raw[5] << 16) |
+                         ((uint32_t)raw[6] <<  8) |  (uint32_t)raw[7];
+        Serial.print("Pairing: REGISTER from 0x"); Serial.println(newId, HEX);
+
+        if (isApprovedDevice(newId)) {
+            Serial.println("Pairing: node already registered.");
+        } else if (!saveApprovedNode(newId)) {
+            Serial.println("Pairing: NVS node list full.");
+        } else {
+            registered++;
+            Serial.print("Pairing: registered 0x"); Serial.println(newId, HEX);
+        }
+
+        delay(LIGHT_CMD_PRE_DELAY_MS);
+        sendRegisterAck(newId);
+    }
+
+    setLed(false);
+    Serial.print("Pairing window expired. Registered ");
+    Serial.print(registered);
+    Serial.println(" new node(s).");
 }
 
 bool manualPingWithRetry() {
