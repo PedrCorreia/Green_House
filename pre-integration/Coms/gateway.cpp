@@ -1,4 +1,4 @@
-/*
+*
 
   Board: ESP32 (DevKit / WROOM)
   Role:  Gateway / receiver. Sits on WiFi + MQTT, talks to RN2483 over UART1.
@@ -27,8 +27,8 @@
 #include <HardwareSerial.h>
 
 // ---------- WiFi / MQTT ----------
-#define WIFI_SSID       "Zhe iPhone"
-#define WIFI_PASSWORD   "20011109"
+#define WIFI_SSID       "Cebolas"
+#define WIFI_PASSWORD   "phas1800"
 
 #define MQTT_BROKER     "broker.emqx.io"
 #define MQTT_PORT       1883
@@ -38,10 +38,10 @@
 #define TOPIC_PING      "esp32/myroom123/ping"
 
 // ---------- Pins ----------
-#define LED_PIN          2     
-#define LORA_UART_RX_PIN 18    // ESP32 GPIO18 -> RN2483 TX
-#define LORA_UART_TX_PIN 19    // ESP32 GPIO19 -> RN2483 RX
-#define RN2483_RST_PIN   23
+#define LED_PIN          4     
+#define LORA_UART_RX_PIN 16    // ESP32 GPIO18 -> RN2483 TX
+#define LORA_UART_TX_PIN 17    // ESP32 GPIO19 -> RN2483 RX
+#define RN2483_RST_PIN   2
 
 // ---------- LoRa radio settings (must match sensor node) ----------
 #define LORA_BAUD_RATE   57600UL
@@ -108,7 +108,6 @@ HardwareSerial loraSerial(1);
 
 bool loraReady = false;
 bool ledState  = false;
-bool lightControlState = false;
 
 unsigned long lastPingTime = 0;
 unsigned long lastHeartbeatTime = 0;
@@ -136,10 +135,7 @@ void ensureWiFiConnected();
 bool connectToMQTT();
 void mqttCallback(char* topic, byte* payload, unsigned int length);
 void publishHeartbeat();
-void publishStatus(const String& msg);
-void publishLightControlState();
 void setLed(bool on);
-void handleSerialLightControlInput();
 
 bool   initLoRa();
 String sendLoRaCommand(const String& cmd, int timeoutMs);
@@ -217,8 +213,6 @@ void loop() {
     lastPingTime = now;
     sendPing("scheduled");
   }
-
-  handleSerialLightControlInput();
 }
 
 void connectToWiFi() {
@@ -305,16 +299,10 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
   else if (t == TOPIC_CONTROL) {
     if (msg.equalsIgnoreCase("ON")) {
       setLed(true);
-      sendLightControlCmd(true);
+      mqttClient.publish(TOPIC_STATUS, "LED turned ON");
     } else if (msg.equalsIgnoreCase("OFF")) {
       setLed(false);
-      sendLightControlCmd(false);
-    } else if (msg.equalsIgnoreCase("LIGHT ON") ||
-               msg.equalsIgnoreCase("LIGHT_ON")) {
-      sendLightControlCmd(true);
-    } else if (msg.equalsIgnoreCase("LIGHT OFF") ||
-               msg.equalsIgnoreCase("LIGHT_OFF")) {
-      sendLightControlCmd(false);
+      mqttClient.publish(TOPIC_STATUS, "LED turned OFF");
     } else {
       mqttClient.publish(TOPIC_STATUS, "Unknown command received");
     }
@@ -327,36 +315,11 @@ void publishHeartbeat() {
   String msg = "Hello from ESP32 | uptime(s): ";
   msg += String(millis() / 1000);
   msg += " | LED: ";
-  msg += (lightControlState ? "ON" : "OFF");
+  msg += (ledState ? "ON" : "OFF");
 
   mqttClient.publish(TOPIC_STATUS, msg.c_str());
   Serial.print("Heartbeat: ");
   Serial.println(msg);
-}
-
-void publishStatus(const String& msg) {
-  Serial.print("STATUS: ");
-  Serial.println(msg);
-
-  if (mqttClient.connected()) {
-    mqttClient.publish(TOPIC_STATUS, msg.c_str());
-  }
-}
-
-void publishLightControlState() {
-  String msg = "{";
-  msg += "\"type\":\"LED\",";
-  msg += "\"deviceId\":\"0x00000005\",";
-  msg += "\"state\":\"";
-  msg += lightControlState ? "ON" : "OFF";
-  msg += "\"}";
-
-  Serial.print("Light control state: ");
-  Serial.println(msg);
-
-  if (mqttClient.connected()) {
-    mqttClient.publish(TOPIC_STATUS, msg.c_str());
-  }
 }
 
 void setLed(bool on) {
@@ -364,22 +327,6 @@ void setLed(bool on) {
   digitalWrite(LED_PIN, on ? HIGH : LOW);
   Serial.print("Gateway LED ");
   Serial.println(on ? "ON" : "OFF");
-}
-
-void handleSerialLightControlInput() {
-  if (!Serial.available()) return;
-
-  char c = Serial.read();
-
-  // Manual light-node test shortcuts.
-  // Remove this whole function, its prototype, and the call in loop()
-  // when the automatic sensor-lux -> light-control path is fully verified.
-  if (c == '1') {
-    sendLightControlCmd(true);
-  }
-  else if (c == '0') {
-    sendLightControlCmd(false);
-  }
 }
 
 
@@ -749,151 +696,6 @@ bool sendLightCommand(uint32_t targetDeviceId, uint16_t desiredLux, uint16_t nex
   Serial.print("RN2483 => ");
   Serial.println(done.length() ? done : "<timeout>");
   return (done == "radio_tx_ok");
-}
-
-bool sendLightControlCmd(bool turnOn) {
-  const int maxRetries = 1;
-  String action = turnOn ? "ON" : "OFF";
-
-  if (!loraReady) {
-    Serial.println("LoRa not ready. Cannot send light control CMD.");
-    publishStatus("Light CMD failed: LoRa not ready");
-    return false;
-  }
-
-  for (int attempt = 0; attempt <= maxRetries; attempt++) {
-    String hexPayload = makeDevicePacket(
-      LIGHT_NODE_ID,
-      turnOn ? CMD_LIGHT_ON : CMD_LIGHT_OFF
-    );
-
-    Serial.print("Sending light control CMD by LoRa: ");
-    Serial.println(hexPayload);
-
-    flushLoRaInput();
-    String cmd = String("radio tx ") + hexPayload;
-    String first = sendLoRaCommand(cmd, 2000);
-
-    if (first != "ok") {
-      Serial.println("Light CMD failed: RN2483 did not accept the TX command.");
-      Serial.print("TX failed reason: ");
-      Serial.println(first.length() ? first : "<timeout>");
-      publishStatus("Light CMD failed: Gateway LoRa TX failed");
-      return false;
-    }
-
-    String done = readLoRaLine(10000);
-    Serial.print("RN2483 => ");
-    Serial.println(done.length() ? done : "<timeout>");
-
-    if (done != "radio_tx_ok") {
-      Serial.println("Light CMD failed: TX was not completed.");
-      Serial.print("TX failed reason: ");
-      Serial.println(done.length() ? done : "<timeout>");
-      publishStatus("Light CMD failed: Gateway LoRa TX failed");
-      return false;
-    }
-
-    Serial.println("Light control CMD TX done.");
-    publishStatus(String("Light ") + action + " CMD sent");
-
-    int ackResult = waitForLightAck(turnOn);
-    if (ackResult == 1) {
-      return true;
-    }
-    if (ackResult == 0) {
-      return false;
-    }
-
-    if (attempt < maxRetries) {
-      Serial.println("ACK timeout. Retrying light control CMD...");
-    } else {
-      publishStatus("Light CMD failed: ACK timeout");
-      return false;
-    }
-  }
-
-  return false;
-}
-
-int waitForLightAck(bool turnOn) {
-  String action = turnOn ? "ON" : "OFF";
-
-  Serial.println("Waiting for light control ACK...");
-
-  // Return values:
-  //   1  = ACK OK
-  //   0  = ACK FAIL or cannot enter RX
-  //  -1  = ACK timeout, caller may retry the CMD
-  unsigned long start = millis();
-
-  while (millis() - start < ACK_TIMEOUT_MS) {
-    String first = sendLoRaCommand("radio rx 0", 1500);
-
-    if (first != "ok") {
-      Serial.println("Gateway failed to enter RX mode for light ACK.");
-      publishStatus("Light CMD failed: ACK wait failed");
-      return 0;
-    }
-
-    unsigned long elapsed = millis() - start;
-    int timeLeft = (int)(ACK_TIMEOUT_MS - elapsed);
-    if (timeLeft <= 0) break;
-
-    String line = readLoRaLine(timeLeft);
-
-    if (line.startsWith("radio_rx ")) {
-      String hexPayload = line.substring(9);
-      hexPayload.trim();
-      hexPayload.toUpperCase();
-
-      Serial.print("Light ACK received HEX: ");
-      Serial.println(hexPayload);
-
-      String ackOkPayload = makeDevicePacket(LIGHT_NODE_ID, ACK_OK);
-      String ackFailPayload = makeDevicePacket(LIGHT_NODE_ID, ACK_FAIL);
-
-      if (hexPayload == ackOkPayload) {
-        Serial.println("ACK OK: light command received and executed.");
-        lightControlState = turnOn;
-        publishStatus(String("Light ") + action + " ACK OK");
-        publishLightControlState();
-        return 1;
-      }
-      else if (hexPayload == ackFailPayload) {
-        Serial.println("ACK FAIL: light node received command but failed to handle it.");
-        publishStatus("Light CMD failed: ACK FAIL");
-        return 0;
-      }
-      else {
-        Serial.println("ACK is not from the light node. Ignoring.");
-      }
-    }
-    else if (line == "radio_err") {
-      Serial.println("No light ACK received before timeout.");
-      return -1;
-    }
-    else {
-      Serial.print("Unexpected light ACK response: ");
-      Serial.println(line.length() ? line : "<timeout>");
-      stopRx();
-      return -1;
-    }
-  }
-
-  stopRx();
-  return -1;
-}
-
-String makeDevicePacket(uint32_t deviceId, uint8_t value) {
-  uint8_t packet[LIGHT_CONTROL_BYTES];
-  packet[0] = (uint8_t)((deviceId >> 24) & 0xFF);
-  packet[1] = (uint8_t)((deviceId >> 16) & 0xFF);
-  packet[2] = (uint8_t)((deviceId >> 8) & 0xFF);
-  packet[3] = (uint8_t)(deviceId & 0xFF);
-  packet[4] = value;
-
-  return bytesToHex(packet, LIGHT_CONTROL_BYTES);
 }
 
 

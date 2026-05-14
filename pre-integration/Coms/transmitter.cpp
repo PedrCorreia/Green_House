@@ -26,8 +26,8 @@
 
 // ---------- Pins ----------
 #define LED_PIN          2
-#define LORA_UART_RX_PIN 22    // ESP32 GPIO18 -> RN2483 TX
-#define LORA_UART_TX_PIN 19    // ESP32 GPIO19 -> RN2483 RX
+#define LORA_UART_RX_PIN 16    // ESP32 GPIO18 -> RN2483 TX
+#define LORA_UART_TX_PIN 17    // ESP32 GPIO19 -> RN2483 RX
 #define RN2483_RST_PIN   14
 
 // ---------- LoRa radio settings (must match gateway) ----------
