@@ -69,7 +69,7 @@
 static const uint8_t SHARED_KEY[4] = { 0xA3, 0x7F, 0x2C, 0x91 };
 static const uint8_t LORA_PING_HEADER[4] = { 0x50, 0x49, 0x4E, 0x47 };  // "PING"
 
-#define PING_WAIT_MS             30000UL    // listen this long after wake for the gateway ping
+#define PING_WAIT_MS             12000UL    // listen for gateway ping; matches gateway ping interval
 #define POST_TX_RX_MS            8000UL     // listen this long after TX for a light command
 #define DEFAULT_SLEEP_S          115UL      // fallback before the first gateway sync hint
 
@@ -88,6 +88,33 @@ int currentLux = 0;
 int currentSoil = 0;
 
 bool loraReady = false;
+RTC_DATA_ATTR uint32_t rtcSleepSeconds = DEFAULT_SLEEP_S;
+RTC_DATA_ATTR bool rtcSyncedWithGateway = false;
+
+// 16x16 Thermometer Icon
+const unsigned char icon_thermo [] PROGMEM = {
+  0x01, 0x80, 0x02, 0x40, 0x02, 0x40, 0x02, 0x40, 0x02, 0x50, 0x02, 0x50, 0x02, 0x50, 0x02, 0x50,
+  0x02, 0x50, 0x04, 0x20, 0x0c, 0x30, 0x0c, 0x30, 0x0c, 0x30, 0x0e, 0x70, 0x07, 0xe0, 0x03, 0xc0
+};
+
+// 16x16 Sun Icon
+const unsigned char icon_sun [] PROGMEM = {
+  0x01, 0x80, 0x00, 0x00, 0x20, 0x04, 0x11, 0x88, 0x03, 0xc0, 0x07, 0xe0, 0x47, 0xe2, 0x4f, 0xf2,
+  0x4f, 0xf2, 0x47, 0xe2, 0x07, 0xe0, 0x03, 0xc0, 0x11, 0x88, 0x20, 0x04, 0x00, 0x00, 0x01, 0x80
+};
+
+void xorWithKey(uint8_t* data, size_t len) {
+  for (size_t i = 0; i < len; i++) {
+    data[i] ^= SHARED_KEY[i % 4];
+  }
+}
+RTC_DATA_ATTR uint32_t rtcSleepSeconds = DEFAULT_SLEEP_S;
+
+void xorWithKey(uint8_t* data, size_t len) {
+  for (size_t i = 0; i < len; i++) {
+    data[i] ^= SHARED_KEY[i % 4];
+  }
+}
 
 struct SensorReading {
   int16_t  tempTenthsC;     // tenths of °C
@@ -189,19 +216,9 @@ void setup() {
   Serial.print(pingWaitMs);
   Serial.println(" ms)...");
 
-  String pingHex;
-  bool gotPing = receivePacket(PING_WAIT_MS, pingHex);
-
-  if (!gotPing) {
-    Serial.println("No ping received. Going back to sleep.");
+  if (!waitForValidPing(PING_WAIT_MS)) {
+    Serial.println("No valid ping received. Going back to sleep.");
     goToDeepSleep();
-  }
-
-  Serial.print("Received: ");
-  Serial.println(pingHex);
-
-  if (!pingHex.equalsIgnoreCase(LORA_PING_HEX)) {
-    Serial.println("(Not literal PING, but treating it as a wake trigger.)");
   }
 
   // 2) Read sensors (currently mock) and build the payload.
@@ -229,22 +246,43 @@ void setup() {
     uint8_t cmdRaw[LIGHT_CMD_BYTES];
     uint32_t targetId;
     uint16_t desiredLux;
-    if (parseLightCommand(cmdHex, targetId, desiredLux)) {
-      if (targetId == DEVICE_ID) {
-        Serial.print("Light command for us. desiredLux=");
-        Serial.println(desiredLux);
-        digitalWrite(LED_PIN, desiredLux > 0 ? HIGH : LOW);
-        // Hold the LED state visibly for a moment before sleeping.
-        // Deep sleep will turn it off again — that's expected; this is just
-        // a demo so you can see it light up before the chip powers down.
-        delay(500);
+    uint16_t nextSleepS;
+    if (cmdHex.length() == LIGHT_CMD_HEX_CHARS &&
+        hexToBytes(cmdHex, cmdRaw, LIGHT_CMD_BYTES)) {
+      xorWithKey(cmdRaw, LIGHT_CMD_BYTES);
+      String decryptedCmd = bytesToHex(cmdRaw, LIGHT_CMD_BYTES);
+      if (parseLightCommand(decryptedCmd, targetId, desiredLux, nextSleepS)) {
+        if (targetId == DEVICE_ID) {
+          Serial.print("Light command for us. desiredLux=");
+          Serial.print(desiredLux);
+          Serial.print(" nextSleepS=");
+          Serial.println(nextSleepS);
+
+          if (desiredLux > 0) {
+            digitalWrite(LED_PIN, HIGH);
+            delay(500);
+          } else {
+            Serial.println("desiredLux=0 -> leaving LED state unchanged.");
+          }
+
+          if (nextSleepS > 0) {
+            rtcSleepSeconds = nextSleepS;
+            Serial.print("Updated RTC sleep duration to ");
+            Serial.print(rtcSleepSeconds);
+            Serial.println(" s.");
+          } else {
+            Serial.println("nextSleepS=0 -> keeping previous RTC sleep duration.");
+          }
+        } else {
+          Serial.print("Light command was for device 0x");
+          Serial.print(targetId, HEX);
+          Serial.println(", not us. Ignoring.");
+        }
       } else {
-        Serial.print("Light command was for device 0x");
-        Serial.print(targetId, HEX);
-        Serial.println(", not us. Ignoring.");
+        Serial.println("Got a packet but it wasn't a valid light command.");
       }
     } else {
-      Serial.println("Got a packet but it wasn't a valid light command.");
+      Serial.println("Light cmd: bad length or hex decode failed.");
     }
   } else {
     Serial.println("No command received.");
