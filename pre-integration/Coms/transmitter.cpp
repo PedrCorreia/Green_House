@@ -22,25 +22,13 @@
 
 #include <Arduino.h>
 #include <HardwareSerial.h>
-#include <Wire.h>
-#include <Adafruit_GFX.h>
-#include <Adafruit_SH110X.h>
-#include <DHT.h>
 #include <esp_sleep.h>
 
 // ---------- Pins ----------
 #define LED_PIN          2
-#define LORA_UART_RX_PIN 16    // ESP32 GPIO16 -> RN2483 TX
-#define LORA_UART_TX_PIN 17    // ESP32 GPIO17 -> RN2483 RX
+#define LORA_UART_RX_PIN 22    // ESP32 GPIO18 -> RN2483 TX
+#define LORA_UART_TX_PIN 19    // ESP32 GPIO19 -> RN2483 RX
 #define RN2483_RST_PIN   14
-
-// ---------- Sensor pins ----------
-#define I2C_SDA          21
-#define I2C_SCL          22
-#define LIGHT_PIN        34    // KY-018 photoresistor analog output
-#define DHTPIN           4
-#define DHTTYPE          DHT22
-#define SOIL_PIN         35    // soil moisture analog output
 
 // ---------- LoRa radio settings (must match gateway) ----------
 #define LORA_BAUD_RATE   57600UL
@@ -74,40 +62,7 @@ static const uint8_t LORA_PING_HEADER[4] = { 0x50, 0x49, 0x4E, 0x47 };  // "PING
 #define DEFAULT_SLEEP_S          115UL      // fallback before the first gateway sync hint
 
 HardwareSerial loraSerial(1);
-DHT dht(DHTPIN, DHTTYPE);
-
-#define SCREEN_WIDTH 128
-#define SCREEN_HEIGHT 64
-#define OLED_RESET -1
-Adafruit_SH1106G display = Adafruit_SH1106G(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
-bool oled_connected = false;
-
-float currentTemp = 0.0f;
-float currentHum = 0.0f;
-int currentLux = 0;
-int currentSoil = 0;
-
 bool loraReady = false;
-RTC_DATA_ATTR uint32_t rtcSleepSeconds = DEFAULT_SLEEP_S;
-RTC_DATA_ATTR bool rtcSyncedWithGateway = false;
-
-// 16x16 Thermometer Icon
-const unsigned char icon_thermo [] PROGMEM = {
-  0x01, 0x80, 0x02, 0x40, 0x02, 0x40, 0x02, 0x40, 0x02, 0x50, 0x02, 0x50, 0x02, 0x50, 0x02, 0x50,
-  0x02, 0x50, 0x04, 0x20, 0x0c, 0x30, 0x0c, 0x30, 0x0c, 0x30, 0x0e, 0x70, 0x07, 0xe0, 0x03, 0xc0
-};
-
-// 16x16 Sun Icon
-const unsigned char icon_sun [] PROGMEM = {
-  0x01, 0x80, 0x00, 0x00, 0x20, 0x04, 0x11, 0x88, 0x03, 0xc0, 0x07, 0xe0, 0x47, 0xe2, 0x4f, 0xf2,
-  0x4f, 0xf2, 0x47, 0xe2, 0x07, 0xe0, 0x03, 0xc0, 0x11, 0x88, 0x20, 0x04, 0x00, 0x00, 0x01, 0x80
-};
-
-void xorWithKey(uint8_t* data, size_t len) {
-  for (size_t i = 0; i < len; i++) {
-    data[i] ^= SHARED_KEY[i % 4];
-  }
-}
 RTC_DATA_ATTR uint32_t rtcSleepSeconds = DEFAULT_SLEEP_S;
 
 void xorWithKey(uint8_t* data, size_t len) {
@@ -140,8 +95,6 @@ bool isValidPing(const String& hex);
 bool waitForValidPing(int timeoutMs);
 
 SensorReading readSensorData();
-void initOled();
-void updateUI();
 void buildSensorPayload(const SensorReading& r, uint8_t* out13);
 bool parseLightCommand(const String& hex,
                        uint32_t& targetIdOut,
@@ -195,13 +148,13 @@ void setup() {
 
   pinMode(LED_PIN, OUTPUT);
   digitalWrite(LED_PIN, LOW);
-  pinMode(LIGHT_PIN, INPUT);
-  pinMode(SOIL_PIN, INPUT);
-  dht.begin();
-  initOled();
 
   Serial.println();
   Serial.println("=== Sensor node waking ===");
+
+  // esp_random() is hardware-backed and works right after reset.
+  // Good enough for picking a mock scenario.
+  randomSeed(esp_random());
 
   if (!initLoRa()) {
     Serial.println("LoRa init failed; sleeping anyway to save power.");
@@ -211,9 +164,8 @@ void setup() {
   // 1) Wait for the gateway's PING.
   // (If the gateway pings while we're still booting, we miss this cycle —
   // not a real problem, the next cycle catches up.)
-  unsigned long pingWaitMs = rtcSyncedWithGateway ? PING_WAIT_MS : FIRST_SYNC_PING_WAIT_MS;
   Serial.print("Waiting for PING (up to ");
-  Serial.print(pingWaitMs);
+  Serial.print(PING_WAIT_MS);
   Serial.println(" ms)...");
 
   if (!waitForValidPing(PING_WAIT_MS)) {
@@ -223,7 +175,7 @@ void setup() {
 
   // 2) Read sensors (currently mock) and build the payload.
   SensorReading r = readSensorData();
-  Serial.print("Sensor read: ");
+  Serial.print("Mock scenario: ");
   Serial.println(r.label);
 
   uint8_t payload[SENSOR_PAYLOAD_BYTES];
@@ -297,82 +249,6 @@ void loop() {
   // After wake, the chip restarts and runs setup() again.
 }
 
-
-void initOled() {
-  Wire.begin(I2C_SDA, I2C_SCL);
-
-  if (!display.begin(0x3C, true) && !display.begin(0x3D, true)) {
-    Serial.println("WARNING: OLED not found");
-  } else {
-    oled_connected = true;
-    display.clearDisplay();
-    display.setTextSize(1);
-    display.setTextColor(SH110X_WHITE);
-    display.setCursor(0, 0);
-    display.println("Sensors Init OK");
-    display.display();
-  }
-}
-
-void updateUI() {
-  if (!oled_connected) return;
-
-  display.clearDisplay();
-
-  display.setTextSize(1);
-  display.setCursor(0, 1);
-  display.printf("ID:%08X", DEVICE_ID);
-
-  display.setCursor(68, 1);
-  display.print("W");
-  display.drawCircle(78, 4, 3, SH110X_WHITE);
-
-  display.setCursor(85, 1);
-  display.print("L");
-  display.fillCircle(95, 4, 3, SH110X_WHITE);
-
-  display.drawRect(106, 0, 18, 9, SH110X_WHITE);
-  display.fillRect(124, 2, 2, 5, SH110X_WHITE);
-  display.fillRect(108, 2, 4, 5, SH110X_WHITE);
-  display.fillRect(113, 2, 4, 5, SH110X_WHITE);
-  display.fillRect(118, 2, 4, 5, SH110X_WHITE);
-
-  display.drawLine(0, 12, 128, 12, SH110X_WHITE);
-
-  if (isnan(currentHum) || isnan(currentTemp)) {
-    display.setCursor(0, 25);
-    display.println("DHT: Error Reading!");
-  } else {
-    display.drawBitmap(2, 16, icon_thermo, 16, 16, SH110X_WHITE);
-    display.setCursor(20, 18);
-    display.setTextSize(2);
-    display.print((int)currentTemp);
-    display.setTextSize(1);
-    display.print("C ");
-
-    display.setCursor(70, 18);
-    display.setTextSize(2);
-    display.print((int)currentHum);
-    display.setTextSize(1);
-    display.print("%");
-  }
-
-  display.setCursor(2, 36);
-  display.print("Soil:");
-  display.print(currentSoil);
-
-  display.setCursor(68, 36);
-  display.print("TX Done");
-
-  display.drawLine(0, 48, 128, 48, SH110X_WHITE);
-  display.drawBitmap(0, 49, icon_sun, 16, 16, SH110X_WHITE);
-  display.setCursor(20, 54);
-  display.print("Light: ");
-  display.print(currentLux);
-  display.println(" lx");
-
-  display.display();
-}
 
 bool initLoRa() {
   pinMode(RN2483_RST_PIN, OUTPUT);
@@ -526,45 +402,30 @@ bool sendPayload(const String& hex) {
 }
 
 
+// =================================================================
+// Sensor reading (mock for now)
+// =================================================================
+//
+// TODO: replace this with real sensor reads once the hardware is wired up.
+//   - DHT22 -> tempTenthsC, humidity
+//   - LDR / BH1750 / TSL2561 -> lux
+//   - capacitive soil sensor on ADC -> soilMoistureRaw
+//   - water leak probe (digital) -> waterLeak
+//   - battery divider on ADC -> battery (%)
+//
+// Until then, pick a random scenario so the gateway sees varied data.
 SensorReading readSensorData() {
-  float humidity = dht.readHumidity();
-  float temperature = dht.readTemperature();
+  static const SensorReading scenarios[] = {
+    // tempC*10, hum%, lux,  soilADC, leak, batt%, label
+    {  225,      55,  450,   1800,    0,    85, "normal greenhouse" },
+    {  210,      60,   80,   1750,    0,    82, "too dark, needs light" },
+    {  240,      40,  500,   3500,    0,    78, "dry soil" },
+    {  220,      75,  300,   1900,    1,    80, "water leak!" },
+    {  230,      55,  400,   1850,    0,    12, "low battery" }
+  };
 
-  int lightRaw = analogRead(LIGHT_PIN);
-  float voltage = min(3.29f, (float)(lightRaw * 3.3f / 4095.0f));
-  float resistance = 10000.0f * voltage / (3.3f - voltage);
-  float lux = min(65535.0f, max((float)(5000000.0f / resistance), 0.0f));
-
-  int soilRaw = analogRead(SOIL_PIN);
-
-  currentTemp = temperature;
-  currentHum = humidity;
-  currentLux = (int)lux;
-  currentSoil = soilRaw;
-
-  SensorReading r;
-  r.tempTenthsC = isnan(temperature) ? 0 : (int16_t)(temperature * 10.0f);
-  r.humidity = isnan(humidity) ? 0 : (uint8_t)humidity;
-  r.lux = (uint16_t)lux;
-  r.soilMoistureRaw = (uint16_t)soilRaw;
-  r.waterLeak = 0;
-  r.battery = 100;
-  r.label = (isnan(temperature) || isnan(humidity)) ? "real sensors, DHT read failed" : "real sensors";
-
-  Serial.print("Temp: ");
-  if (isnan(temperature)) Serial.print("nan");
-  else Serial.print(temperature, 1);
-  Serial.print(" C | Hum: ");
-  if (isnan(humidity)) Serial.print("nan");
-  else Serial.print(humidity, 1);
-  Serial.print(" % | Light: ");
-  Serial.print((int)lux);
-  Serial.print(" lx | Soil: ");
-  Serial.println(soilRaw);
-
-  updateUI();
- 
-  return r;
+  const long n = (long)(sizeof(scenarios) / sizeof(scenarios[0]));
+  return scenarios[random(0, n)];
 }
 
 void buildSensorPayload(const SensorReading& r, uint8_t* out13) {
