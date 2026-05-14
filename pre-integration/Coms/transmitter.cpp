@@ -22,6 +22,9 @@
 
 #include <Arduino.h>
 #include <HardwareSerial.h>
+#include <Wire.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SH110X.h>
 #include <esp_sleep.h>
 
 // ---------- Pins ----------
@@ -29,6 +32,8 @@
 #define LORA_UART_RX_PIN 16    // ESP32 GPIO18 -> RN2483 TX
 #define LORA_UART_TX_PIN 17    // ESP32 GPIO19 -> RN2483 RX
 #define RN2483_RST_PIN   14
+#define I2C_SDA          21
+#define I2C_SCL          22
 
 // ---------- LoRa radio settings (must match gateway) ----------
 #define LORA_BAUD_RATE   57600UL
@@ -65,6 +70,12 @@ HardwareSerial loraSerial(1);
 bool loraReady = false;
 RTC_DATA_ATTR uint32_t rtcSleepSeconds = DEFAULT_SLEEP_S;
 
+#define SCREEN_WIDTH 128
+#define SCREEN_HEIGHT 64
+#define OLED_RESET -1
+Adafruit_SH1106G display = Adafruit_SH1106G(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
+bool oledConnected = false;
+
 void xorWithKey(uint8_t* data, size_t len) {
   for (size_t i = 0; i < len; i++) {
     data[i] ^= SHARED_KEY[i % 4];
@@ -95,6 +106,8 @@ bool isValidPing(const String& hex);
 bool waitForValidPing(int timeoutMs);
 
 SensorReading readSensorData();
+void initOled();
+void updateUi(const SensorReading& r, const char* stateText);
 void buildSensorPayload(const SensorReading& r, uint8_t* out13);
 bool parseLightCommand(const String& hex,
                        uint32_t& targetIdOut,
@@ -148,6 +161,7 @@ void setup() {
 
   pinMode(LED_PIN, OUTPUT);
   digitalWrite(LED_PIN, LOW);
+  initOled();
 
   Serial.println();
   Serial.println("=== Sensor node waking ===");
@@ -177,6 +191,7 @@ void setup() {
   SensorReading r = readSensorData();
   Serial.print("Mock scenario: ");
   Serial.println(r.label);
+  updateUi(r, "TX pending");
 
   uint8_t payload[SENSOR_PAYLOAD_BYTES];
   buildSensorPayload(r, payload);
@@ -247,6 +262,63 @@ void setup() {
 void loop() {
   // Never reached: setup() always ends in deep sleep.
   // After wake, the chip restarts and runs setup() again.
+}
+
+void initOled() {
+  Wire.begin(I2C_SDA, I2C_SCL);
+
+  if (!display.begin(0x3C, true) && !display.begin(0x3D, true)) {
+    Serial.println("WARNING: OLED not found");
+    oledConnected = false;
+    return;
+  }
+
+  oledConnected = true;
+  display.oled_command(SH110X_DISPLAYON);
+  display.clearDisplay();
+  display.setTextColor(SH110X_WHITE);
+  display.setTextSize(1);
+  display.setCursor(0, 0);
+  display.println("Greenhouse Node");
+  display.setCursor(0, 12);
+  display.println("Booting...");
+  display.display();
+}
+
+void updateUi(const SensorReading& r, const char* stateText) {
+  if (!oledConnected) return;
+
+  display.clearDisplay();
+  display.setTextColor(SH110X_WHITE);
+  display.setTextSize(1);
+
+  display.setCursor(0, 0);
+  display.printf("ID:%08X", DEVICE_ID);
+
+  display.setCursor(0, 12);
+  display.print("T:");
+  display.print(r.tempTenthsC / 10.0f, 1);
+  display.print("C H:");
+  display.print((int)r.humidity);
+  display.print("%");
+
+  display.setCursor(0, 24);
+  display.print("Lux:");
+  display.print((int)r.lux);
+  display.print(" Soil:");
+  display.print((int)r.soilMoistureRaw);
+
+  display.setCursor(0, 36);
+  display.print("Batt:");
+  display.print((int)r.battery);
+  display.print(" Leak:");
+  display.print(r.waterLeak ? "Y" : "N");
+
+  display.setCursor(0, 50);
+  display.print("State: ");
+  display.print(stateText);
+
+  display.display();
 }
 
 
@@ -511,6 +583,16 @@ String bytesToHex(const uint8_t* data, size_t len) {
 void goToDeepSleep() {
 
   stopRx();
+
+  if (oledConnected) {
+    display.clearDisplay();
+    display.setCursor(0, 0);
+    display.setTextSize(1);
+    display.setTextColor(SH110X_WHITE);
+    display.println("Sleeping...");
+    display.display();
+    display.oled_command(SH110X_DISPLAYOFF);
+  }
 
   Serial.print("Sleeping for ");
   Serial.print((unsigned long)rtcSleepSeconds);
