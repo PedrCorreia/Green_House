@@ -65,18 +65,6 @@ static const uint8_t LORA_PING_HEADER[4] = { 0x50, 0x49, 0x4E, 0x47 };  // "PING
 #define SENSOR_PAYLOAD_HEX_CHARS 26
 #define LIGHT_CMD_BYTES          8
 
-// Light control node protocol:
-// 4 bytes device ID + 1 byte command/status.
-// For device ID 5:
-//   0000000501 = light ON command or ACK OK
-//   0000000500 = light OFF command or ACK FAIL
-#define LIGHT_NODE_ID            5UL
-#define LIGHT_CONTROL_BYTES      5
-#define CMD_LIGHT_OFF            0x00
-#define CMD_LIGHT_ON             0x01
-#define ACK_FAIL                 0x00
-#define ACK_OK                   0x01
-
 // ---------- Shared secret ----------
 // Must match transmitter. XOR-obfuscates payloads; not cryptographically strong
 // but filters out noise and rogue nodes that don't know the key.
@@ -107,7 +95,6 @@ bool isApprovedDevice(uint32_t id) {
 #define MAX_SLEEP_S              65000UL
 #define MANUAL_PING_TIMEOUT_MS   150000UL
 #define RETRY_INTERVAL_MS        15000UL
-#define ACK_TIMEOUT_MS           5000UL
 // Small gap before sending the light command, so the sensor node's
 // post-TX RX window is definitely open by the time we transmit.
 #define LIGHT_CMD_PRE_DELAY_MS   400
@@ -167,9 +154,6 @@ bool parseSensorPayload(const String& hexStr, SensorData& out);
 void publishSensorData(const SensorData& d, bool needsLight);
 uint16_t calculateNextSleepSeconds();
 bool sendLightCommand(uint32_t targetDeviceId, uint16_t desiredLux, uint16_t nextSleepS);
-bool sendLightControlCmd(bool turnOn);
-int  waitForLightAck(bool turnOn);
-String makeDevicePacket(uint32_t deviceId, uint8_t value);
 bool isApprovedDevice(uint32_t id);
 
 bool   hexToBytes(const String& hexStr, uint8_t* out, size_t outLen);
@@ -637,11 +621,10 @@ bool waitForSensorReply(int timeoutMs) {
     // Give the sensor node a moment to switch from TX to RX before we transmit.
     delay(LIGHT_CMD_PRE_DELAY_MS);
     if (needsLight) {
-      Serial.println("Lux below threshold -> sending sensor sync and light-node ON command.");
+      Serial.println("Lux below threshold -> sending light/sync command.");
       sendLightCommand(d.deviceId, DESIRED_LUX_WHEN_DARK, nextSleepS);
-      sendLightControlCmd(true);
     } else {
-      Serial.println("Light OK -> sending sensor sync-only command; light node unchanged.");
+      Serial.println("Light OK -> sending sync-only command.");
       sendLightCommand(d.deviceId, 0, nextSleepS);
     }
     return true;
