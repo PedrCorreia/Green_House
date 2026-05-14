@@ -243,6 +243,12 @@
         <div class="sensor-label">Last Updated</div>
         <div id="lastUpdatedValue" class="sensor-value">—</div>
       </div>
+
+      <div class="sensor-card">
+        <div class="sensor-label">Light State</div>
+        <div id="lightStateValue" class="sensor-value">OFF</div>
+        <div id="lightDeviceValue" class="sensor-note">Device: 0x00000005</div>
+      </div>
     </div>
   </div>
 
@@ -399,6 +405,8 @@
         const parsed = JSON.parse(message.payloadString);
         if (parsed && parsed.type === "sensorData") {
           updateSensorDashboard(parsed);
+        } else if (parsed && parsed.type === "LED") {
+          updateLightState(parsed);
         }
       } catch (err) {
         // Non-JSON status strings are expected from the existing ESP32 code path.
@@ -433,6 +441,17 @@
       batteryFill.className = "battery-fill " + getBatteryClass(battery);
 
       document.getElementById("lastUpdatedValue").textContent = new Date().toLocaleTimeString();
+    }
+
+    function updateLightState(data) {
+      document.getElementById("sensorWaiting").style.display = "none";
+      document.getElementById("sensorGrid").style.display = "grid";
+
+      const state = String(data.state || "OFF").toUpperCase();
+      const deviceId = data.deviceId || "0x00000005";
+
+      document.getElementById("lightStateValue").textContent = state === "ON" ? "ON" : "OFF";
+      document.getElementById("lightDeviceValue").textContent = `Device: ${deviceId}`;
     }
 
     function decodeNodeTypeFromDeviceId(deviceId) {
