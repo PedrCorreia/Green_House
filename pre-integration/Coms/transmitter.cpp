@@ -13,8 +13,8 @@
   Test:
     1. Flash, open Serial Monitor at 115200.
     2. Have the gateway running. Within PING_WAIT_MS the node should
-       receive the ping, transmit a (mock) reading, and either turn its
-       LED on or stay dark depending on the lux value picked.
+       receive the ping, transmit a real sensor reading, and either turn its
+       LED on or stay dark depending on the lux value.
     3. Then it sleeps for the gateway-provided RTC sleep duration and the cycle repeats.
 
 
@@ -25,15 +25,24 @@
 #include <Wire.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_SH110X.h>
+#include <DHT.h>
 #include <esp_sleep.h>
 
 // ---------- Pins ----------
 #define LED_PIN          2
-#define LORA_UART_RX_PIN 16    // ESP32 GPIO18 -> RN2483 TX
-#define LORA_UART_TX_PIN 17    // ESP32 GPIO19 -> RN2483 RX
+// ---------------------- PINS UPDATED we are using pedros setup for easier use of PCB but update on everyone elses
+#define LORA_UART_RX_PIN 16    // ESP32 GPIO16 -> RN2483 TX
+#define LORA_UART_TX_PIN 17    // ESP32 GPIO17 -> RN2483 RX
+
 #define RN2483_RST_PIN   14
 #define I2C_SDA          21
 #define I2C_SCL          22
+
+// ---------- Sensor pins ----------
+#define LIGHT_PIN        34    // KY-018/photoresistor analog output
+#define DHTPIN           4
+#define DHTTYPE          DHT22
+#define SOIL_PIN         35    
 
 // ---------- LoRa radio settings (must match gateway) ----------
 #define LORA_BAUD_RATE   57600UL
@@ -57,24 +66,26 @@
 #define LIGHT_CMD_HEX_CHARS      16
 
 // ---------- Shared secret ----------
-// Must match gateway. XOR-obfuscates payloads; not cryptographically strong
-// but filters out noise and rogue nodes that don't know the key.
 static const uint8_t SHARED_KEY[4] = { 0xA3, 0x7F, 0x2C, 0x91 };
 static const uint8_t LORA_PING_HEADER[4] = { 0x50, 0x49, 0x4E, 0x47 };  // "PING"
 
-#define PING_WAIT_MS             12000UL    // listen for gateway ping; matches gateway ping interval
-#define POST_TX_RX_MS            8000UL     // listen this long after TX for a light command
-#define DEFAULT_SLEEP_S          115UL      // fallback before the first gateway sync hint
+#define PING_WAIT_MS             12000UL    // listen this long after sync is established
+#define FIRST_SYNC_PING_WAIT_MS  130000UL   
+#define POST_TX_RX_MS            8000UL     
+#define DEFAULT_SLEEP_S          115UL      
 
 HardwareSerial loraSerial(1);
+DHT dht(DHTPIN, DHTTYPE);
 bool loraReady = false;
 RTC_DATA_ATTR uint32_t rtcSleepSeconds = DEFAULT_SLEEP_S;
+RTC_DATA_ATTR bool rtcSyncedWithGateway = false;
 
 #define SCREEN_WIDTH 128
 #define SCREEN_HEIGHT 64
 #define OLED_RESET -1
 Adafruit_SH1106G display = Adafruit_SH1106G(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
 bool oledConnected = false;
+
 
 void xorWithKey(uint8_t* data, size_t len) {
   for (size_t i = 0; i < len; i++) {
@@ -161,35 +172,37 @@ void setup() {
 
   pinMode(LED_PIN, OUTPUT);
   digitalWrite(LED_PIN, LOW);
+  pinMode(LIGHT_PIN, INPUT);
+  pinMode(SOIL_PIN, INPUT);
+  dht.begin();
   initOled();
 
   Serial.println();
   Serial.println("=== Sensor node waking ===");
 
-  // esp_random() is hardware-backed and works right after reset.
-  // Good enough for picking a mock scenario.
-  randomSeed(esp_random());
 
   if (!initLoRa()) {
     Serial.println("LoRa init failed; sleeping anyway to save power.");
+    delay(750);
     goToDeepSleep();
   }
 
   // 1) Wait for the gateway's PING.
-  // (If the gateway pings while we're still booting, we miss this cycle —
-  // not a real problem, the next cycle catches up.)
+  unsigned long pingWaitMs = rtcSyncedWithGateway ? PING_WAIT_MS : FIRST_SYNC_PING_WAIT_MS;
   Serial.print("Waiting for PING (up to ");
-  Serial.print(PING_WAIT_MS);
+  Serial.print(pingWaitMs);
   Serial.println(" ms)...");
 
-  if (!waitForValidPing(PING_WAIT_MS)) {
+  if (!waitForValidPing((int)pingWaitMs)) {
     Serial.println("No valid ping received. Going back to sleep.");
+    delay(750);
     goToDeepSleep();
   }
 
-  // 2) Read sensors (currently mock) and build the payload.
+
+  // 2) Read real sensors and build the payload.
   SensorReading r = readSensorData();
-  Serial.print("Mock scenario: ");
+  Serial.print("Sensor read: ");
   Serial.println(r.label);
   updateUi(r, "TX pending");
 
@@ -203,10 +216,13 @@ void setup() {
   // 3) Transmit.
   if (!sendPayload(payloadHex)) {
     Serial.println("TX failed. Sleeping.");
+    updateUi(r, "TX failed");
+    delay(750);
     goToDeepSleep();
   }
 
   // 4) Short RX window for the gateway's light command.
+  updateUi(r, "RX command");
   Serial.println("Listening for light command...");
   String cmdHex;
   if (receivePacket(POST_TX_RX_MS, cmdHex)) {
@@ -226,14 +242,17 @@ void setup() {
           Serial.println(nextSleepS);
 
           if (desiredLux > 0) {
+            updateUi(r, "LED ON");
             digitalWrite(LED_PIN, HIGH);
             delay(500);
           } else {
             Serial.println("desiredLux=0 -> leaving LED state unchanged.");
+            updateUi(r, "LED unchanged");
           }
 
           if (nextSleepS > 0) {
             rtcSleepSeconds = nextSleepS;
+            rtcSyncedWithGateway = true;
             Serial.print("Updated RTC sleep duration to ");
             Serial.print(rtcSleepSeconds);
             Serial.println(" s.");
@@ -474,30 +493,49 @@ bool sendPayload(const String& hex) {
 }
 
 
-// =================================================================
-// Sensor reading (mock for now)
-// =================================================================
-//
-// TODO: replace this with real sensor reads once the hardware is wired up.
-//   - DHT22 -> tempTenthsC, humidity
-//   - LDR / BH1750 / TSL2561 -> lux
-//   - capacitive soil sensor on ADC -> soilMoistureRaw
-//   - water leak probe (digital) -> waterLeak
-//   - battery divider on ADC -> battery (%)
-//
-// Until then, pick a random scenario so the gateway sees varied data.
 SensorReading readSensorData() {
-  static const SensorReading scenarios[] = {
-    // tempC*10, hum%, lux,  soilADC, leak, batt%, label
-    {  225,      55,  450,   1800,    0,    85, "normal greenhouse" },
-    {  210,      60,   80,   1750,    0,    82, "too dark, needs light" },
-    {  240,      40,  500,   3500,    0,    78, "dry soil" },
-    {  220,      75,  300,   1900,    1,    80, "water leak!" },
-    {  230,      55,  400,   1850,    0,    12, "low battery" }
-  };
+  float humidity = dht.readHumidity();
+  float temperature = dht.readTemperature();
 
-  const long n = (long)(sizeof(scenarios) / sizeof(scenarios[0]));
-  return scenarios[random(0, n)];
+  int lightRaw = analogRead(LIGHT_PIN);
+  float voltage = (float)lightRaw * 3.3f / 4095.0f;
+  if (voltage > 3.29f) voltage = 3.29f;  // avoid divide-by-zero near Vcc
+
+  float resistance = 10000.0f * voltage / (3.3f - voltage);
+  float luxFloat = 0.0f;
+  if (resistance > 0.0f) {
+    luxFloat = 5000000.0f / resistance;
+  }
+  if (luxFloat < 0.0f) luxFloat = 0.0f;
+  if (luxFloat > 65535.0f) luxFloat = 65535.0f;
+
+  int soilRaw = analogRead(SOIL_PIN);
+
+  SensorReading r;
+  r.tempTenthsC = isnan(temperature) ? 0 : (int16_t)(temperature * 10.0f);
+  r.humidity = isnan(humidity) ? 0 : (uint8_t)humidity;
+  r.lux = (uint16_t)luxFloat;
+  r.soilMoistureRaw = (uint16_t)soilRaw;
+  r.waterLeak = 0;      // no leak sensor wired yet
+  r.battery = 100;      // no battery divider wired yet
+  r.label = (isnan(temperature) || isnan(humidity))
+              ? "real sensors, DHT read failed"
+              : "real sensors";
+
+  Serial.print("Temp: ");
+  if (isnan(temperature)) Serial.print("nan");
+  else Serial.print(temperature, 1);
+  Serial.print(" C | Hum: ");
+  if (isnan(humidity)) Serial.print("nan");
+  else Serial.print(humidity, 1);
+  Serial.print(" % | Light raw: ");
+  Serial.print(lightRaw);
+  Serial.print(" | Lux: ");
+  Serial.print((int)luxFloat);
+  Serial.print(" lx | Soil: ");
+  Serial.println(soilRaw);
+
+  return r;
 }
 
 void buildSensorPayload(const SensorReading& r, uint8_t* out13) {
@@ -596,7 +634,7 @@ void goToDeepSleep() {
 
   Serial.print("Sleeping for ");
   Serial.print((unsigned long)rtcSleepSeconds);
-  Serial.println(" s. See you on the other side.");
+  Serial.println(" s.");
   Serial.flush();
 
   esp_sleep_enable_timer_wakeup((uint64_t)rtcSleepSeconds * 1000000ULL);
