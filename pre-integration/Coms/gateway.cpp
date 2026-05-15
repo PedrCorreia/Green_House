@@ -1,4 +1,4 @@
-*
+/*
 
   Board: ESP32 (DevKit / WROOM)
   Role:  Gateway / receiver. Sits on WiFi + MQTT, talks to RN2483 over UART1.
@@ -66,6 +66,18 @@ static const uint8_t LORA_PING_HEADER[4] = { 0x50, 0x49, 0x4E, 0x47 };  // "PING
 #define SENSOR_PAYLOAD_HEX_CHARS 26
 #define LIGHT_CMD_BYTES          8
 
+// Light control node protocol:
+// 4 bytes device ID + 1 byte command/status.
+// For device ID 5:
+//   0000000501 = light ON command or ACK OK
+//   0000000500 = light OFF command or ACK FAIL
+#define LIGHT_NODE_ID            5UL
+#define LIGHT_CONTROL_BYTES      5
+#define CMD_LIGHT_OFF            0x00
+#define CMD_LIGHT_ON             0x01
+#define ACK_FAIL                 0x00
+#define ACK_OK                   0x01
+
 // ---------- Shared secret ----------
 // Must match transmitter. XOR-obfuscates payloads; not cryptographically strong
 // but filters out noise and rogue nodes that don't know the key.
@@ -96,6 +108,7 @@ bool isApprovedDevice(uint32_t id) {
 #define MAX_SLEEP_S              65000UL
 #define MANUAL_PING_TIMEOUT_MS   150000UL
 #define RETRY_INTERVAL_MS        15000UL
+#define ACK_TIMEOUT_MS           5000UL
 // Small gap before sending the light command, so the sensor node's
 // post-TX RX window is definitely open by the time we transmit.
 #define LIGHT_CMD_PRE_DELAY_MS   400
@@ -109,6 +122,7 @@ HardwareSerial loraSerial(1);
 
 bool loraReady = false;
 bool ledState  = false;
+bool lightControlState = false;
 
 unsigned long lastPingTime = 0;
 unsigned long lastHeartbeatTime = 0;
@@ -136,7 +150,10 @@ void ensureWiFiConnected();
 bool connectToMQTT();
 void mqttCallback(char* topic, byte* payload, unsigned int length);
 void publishHeartbeat();
+void publishStatus(const String& msg);
+void publishLightControlState();
 void setLed(bool on);
+void handleSerialLightControlInput();
 
 bool   initLoRa();
 String sendLoRaCommand(const String& cmd, int timeoutMs);
@@ -151,6 +168,9 @@ bool parseSensorPayload(const String& hexStr, SensorData& out);
 void publishSensorData(const SensorData& d, bool needsLight);
 uint16_t calculateNextSleepSeconds();
 bool sendLightCommand(uint32_t targetDeviceId, uint16_t desiredLux, uint16_t nextSleepS);
+bool sendLightControlCmd(bool turnOn);
+int  waitForLightAck(bool turnOn);
+String makeDevicePacket(uint32_t deviceId, uint8_t value);
 bool isApprovedDevice(uint32_t id);
 
 bool   hexToBytes(const String& hexStr, uint8_t* out, size_t outLen);
@@ -214,6 +234,8 @@ void loop() {
     lastPingTime = now;
     sendPing("scheduled");
   }
+
+  handleSerialLightControlInput();
 }
 
 void connectToWiFi() {
@@ -300,10 +322,16 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
   else if (t == TOPIC_CONTROL) {
     if (msg.equalsIgnoreCase("ON")) {
       setLed(true);
-      mqttClient.publish(TOPIC_STATUS, "LED turned ON");
+      sendLightControlCmd(true);
     } else if (msg.equalsIgnoreCase("OFF")) {
       setLed(false);
-      mqttClient.publish(TOPIC_STATUS, "LED turned OFF");
+      sendLightControlCmd(false);
+    } else if (msg.equalsIgnoreCase("LIGHT ON") ||
+               msg.equalsIgnoreCase("LIGHT_ON")) {
+      sendLightControlCmd(true);
+    } else if (msg.equalsIgnoreCase("LIGHT OFF") ||
+               msg.equalsIgnoreCase("LIGHT_OFF")) {
+      sendLightControlCmd(false);
     } else {
       mqttClient.publish(TOPIC_STATUS, "Unknown command received");
     }
@@ -316,11 +344,36 @@ void publishHeartbeat() {
   String msg = "Hello from ESP32 | uptime(s): ";
   msg += String(millis() / 1000);
   msg += " | LED: ";
-  msg += (ledState ? "ON" : "OFF");
+  msg += (lightControlState ? "ON" : "OFF");
 
   mqttClient.publish(TOPIC_STATUS, msg.c_str());
   Serial.print("Heartbeat: ");
   Serial.println(msg);
+}
+
+void publishStatus(const String& msg) {
+  Serial.print("STATUS: ");
+  Serial.println(msg);
+
+  if (mqttClient.connected()) {
+    mqttClient.publish(TOPIC_STATUS, msg.c_str());
+  }
+}
+
+void publishLightControlState() {
+  String msg = "{";
+  msg += "\"type\":\"LED\",";
+  msg += "\"deviceId\":\"0x00000005\",";
+  msg += "\"state\":\"";
+  msg += lightControlState ? "ON" : "OFF";
+  msg += "\"}";
+
+  Serial.print("Light control state: ");
+  Serial.println(msg);
+
+  if (mqttClient.connected()) {
+    mqttClient.publish(TOPIC_STATUS, msg.c_str());
+  }
 }
 
 void setLed(bool on) {
@@ -328,6 +381,22 @@ void setLed(bool on) {
   digitalWrite(LED_PIN, on ? HIGH : LOW);
   Serial.print("Gateway LED ");
   Serial.println(on ? "ON" : "OFF");
+}
+
+void handleSerialLightControlInput() {
+  if (!Serial.available()) return;
+
+  char c = Serial.read();
+
+  // Manual light-node test shortcuts.
+  // Remove this whole function, its prototype, and the call in loop()
+  // when the automatic sensor-lux -> light-control path is fully verified.
+  if (c == '1') {
+    sendLightControlCmd(true);
+  }
+  else if (c == '0') {
+    sendLightControlCmd(false);
+  }
 }
 
 
@@ -569,10 +638,11 @@ bool waitForSensorReply(int timeoutMs) {
     // Give the sensor node a moment to switch from TX to RX before we transmit.
     delay(LIGHT_CMD_PRE_DELAY_MS);
     if (needsLight) {
-      Serial.println("Lux below threshold -> sending light/sync command.");
+      Serial.println("Lux below threshold -> sending sensor sync and light-node ON command.");
       sendLightCommand(d.deviceId, DESIRED_LUX_WHEN_DARK, nextSleepS);
+      sendLightControlCmd(true);
     } else {
-      Serial.println("Light OK -> sending sync-only command.");
+      Serial.println("Light OK -> sending sync-only command; light node unchanged.");
       sendLightCommand(d.deviceId, 0, nextSleepS);
     }
     return true;
@@ -697,6 +767,151 @@ bool sendLightCommand(uint32_t targetDeviceId, uint16_t desiredLux, uint16_t nex
   Serial.print("RN2483 => ");
   Serial.println(done.length() ? done : "<timeout>");
   return (done == "radio_tx_ok");
+}
+
+bool sendLightControlCmd(bool turnOn) {
+  const int maxRetries = 1;
+  String action = turnOn ? "ON" : "OFF";
+
+  if (!loraReady) {
+    Serial.println("LoRa not ready. Cannot send light control CMD.");
+    publishStatus("Light CMD failed: LoRa not ready");
+    return false;
+  }
+
+  for (int attempt = 0; attempt <= maxRetries; attempt++) {
+    String hexPayload = makeDevicePacket(
+      LIGHT_NODE_ID,
+      turnOn ? CMD_LIGHT_ON : CMD_LIGHT_OFF
+    );
+
+    Serial.print("Sending light control CMD by LoRa: ");
+    Serial.println(hexPayload);
+
+    flushLoRaInput();
+    String cmd = String("radio tx ") + hexPayload;
+    String first = sendLoRaCommand(cmd, 2000);
+
+    if (first != "ok") {
+      Serial.println("Light CMD failed: RN2483 did not accept the TX command.");
+      Serial.print("TX failed reason: ");
+      Serial.println(first.length() ? first : "<timeout>");
+      publishStatus("Light CMD failed: Gateway LoRa TX failed");
+      return false;
+    }
+
+    String done = readLoRaLine(10000);
+    Serial.print("RN2483 => ");
+    Serial.println(done.length() ? done : "<timeout>");
+
+    if (done != "radio_tx_ok") {
+      Serial.println("Light CMD failed: TX was not completed.");
+      Serial.print("TX failed reason: ");
+      Serial.println(done.length() ? done : "<timeout>");
+      publishStatus("Light CMD failed: Gateway LoRa TX failed");
+      return false;
+    }
+
+    Serial.println("Light control CMD TX done.");
+    publishStatus(String("Light ") + action + " CMD sent");
+
+    int ackResult = waitForLightAck(turnOn);
+    if (ackResult == 1) {
+      return true;
+    }
+    if (ackResult == 0) {
+      return false;
+    }
+
+    if (attempt < maxRetries) {
+      Serial.println("ACK timeout. Retrying light control CMD...");
+    } else {
+      publishStatus("Light CMD failed: ACK timeout");
+      return false;
+    }
+  }
+
+  return false;
+}
+
+int waitForLightAck(bool turnOn) {
+  String action = turnOn ? "ON" : "OFF";
+
+  Serial.println("Waiting for light control ACK...");
+
+  // Return values:
+  //   1  = ACK OK
+  //   0  = ACK FAIL or cannot enter RX
+  //  -1  = ACK timeout, caller may retry the CMD
+  unsigned long start = millis();
+
+  while (millis() - start < ACK_TIMEOUT_MS) {
+    String first = sendLoRaCommand("radio rx 0", 1500);
+
+    if (first != "ok") {
+      Serial.println("Gateway failed to enter RX mode for light ACK.");
+      publishStatus("Light CMD failed: ACK wait failed");
+      return 0;
+    }
+
+    unsigned long elapsed = millis() - start;
+    int timeLeft = (int)(ACK_TIMEOUT_MS - elapsed);
+    if (timeLeft <= 0) break;
+
+    String line = readLoRaLine(timeLeft);
+
+    if (line.startsWith("radio_rx ")) {
+      String hexPayload = line.substring(9);
+      hexPayload.trim();
+      hexPayload.toUpperCase();
+
+      Serial.print("Light ACK received HEX: ");
+      Serial.println(hexPayload);
+
+      String ackOkPayload = makeDevicePacket(LIGHT_NODE_ID, ACK_OK);
+      String ackFailPayload = makeDevicePacket(LIGHT_NODE_ID, ACK_FAIL);
+
+      if (hexPayload == ackOkPayload) {
+        Serial.println("ACK OK: light command received and executed.");
+        lightControlState = turnOn;
+        publishStatus(String("Light ") + action + " ACK OK");
+        publishLightControlState();
+        return 1;
+      }
+      else if (hexPayload == ackFailPayload) {
+        Serial.println("ACK FAIL: light node received command but failed to handle it.");
+        publishStatus("Light CMD failed: ACK FAIL");
+        return 0;
+      }
+      else {
+        Serial.println("ACK is not from the light node. Ignoring.");
+      }
+    }
+    else if (line == "radio_err") {
+      Serial.println("No light ACK received before timeout.");
+      return -1;
+    }
+    else {
+      Serial.print("Unexpected light ACK response: ");
+      Serial.println(line.length() ? line : "<timeout>");
+      stopRx();
+      return -1;
+    }
+  }
+
+  stopRx();
+  return -1;
+}
+
+String makeDevicePacket(uint32_t deviceId, uint8_t value) {
+  uint8_t packet[LIGHT_CONTROL_BYTES];
+  packet[0] = (uint8_t)((deviceId >> 24) & 0xFF);
+  packet[1] = (uint8_t)((deviceId >> 16) & 0xFF);
+  packet[2] = (uint8_t)((deviceId >> 8) & 0xFF);
+  packet[3] = (uint8_t)(deviceId & 0xFF);
+  packet[4] = value;
+
+  return bytesToHex(packet, LIGHT_CONTROL_BYTES);
 }
 
 
