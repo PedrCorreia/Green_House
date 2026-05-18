@@ -1,52 +1,48 @@
 /*
   Board: ESP32 (DevKit / WROOM) with RN2483 LoRa module
-  Role:  LoRaWAN sensor node. Wakes from deep sleep, joins Cibicom (OTAA),
-         sends a 13-byte mock sensor payload (port 1), reads any queued
-         downlink for a frequency update (2-byte big-endian sleep seconds),
-         then returns to deep sleep.
+  Role:  LoRaWAN sensor node. Joins Cibicom (OTAA) once on boot, then
+         sends a 13-byte mock sensor payload (port 1) every TX_INTERVAL_MS.
+         Reads any queued downlink for a frequency update (2-byte big-endian
+         interval in seconds) after each transmission.
 
-  Note: OTAA re-join is required on every boot (RN2483 loses session across
-        power cycles). Join latency is ~5-15 s.
+  Wiring (per Cibicom hookup guide):
+    ESP32 GPIO18 <-> RX on RN2483
+    ESP32 GPIO19 <-> TX on RN2483
+    ESP32 GPIO23 <-> RST on RN2483
+    ESP32 3.3V   <-> 3.3V on RN2483
+    ESP32 GND    <-> GND on RN2483
 
   Setup:
-    1. Register this device on iotnet.teracom.dk (separate device from slave).
-    2. Fill in APPEUI/APPKEY from the Loriot console.
+    1. Register this device on iotnet.teracom.dk (OTAA, "Generate all
+       parameters except DevEUI"). Enter the HWEUI printed at startup.
+    2. Fill in APPEUI/APPKEY from the Loriot device page.
 */
 
 #include <Arduino.h>
 #include <HardwareSerial.h>
 #include <rn2xx3.h>
-#include <esp_sleep.h>
-
-#define DEBUG 1
-
-#ifdef DEBUG
-  #define DBG(x)   Serial.print(x)
-  #define DBGLN(x) Serial.println(x)
-#else
-  #define DBG(x)
-  #define DBGLN(x)
-#endif
 
 // ---------- Credentials (fill in from Loriot device page) ----------
-static const char* APPEUI = "0000000000000000";  // big-endian, 16 hex chars
-static const char* APPKEY = "00000000000000000000000000000000";
+static const char* APPEUI = "BE7A000000001465";  // big-endian, 16 hex chars
+static const char* APPKEY = "1ACEFC79682A1596EB18EC605BB5C415";
 
 // ---------- Pins ----------
-#define RXD2      18
-#define TXD2      19
-#define RST_PIN   23
-#define LED_PIN    2
+#define RXD2     18
+#define TXD2     19
+#define RST_PIN  23
+#define LED_PIN   2
 
 // ---------- Timing ----------
-#define DEFAULT_SLEEP_S  120UL
-#define MIN_SLEEP_S       30UL
-#define MAX_SLEEP_S     3600UL
+#define DEFAULT_TX_INTERVAL_MS  30000UL
+#define MIN_TX_INTERVAL_MS      30000UL
+#define MAX_TX_INTERVAL_MS    3600000UL
 
 // ---------- Payload ----------
 #define DEVICE_ID  0x02AABBCC   // MSB 0x02 = transmitter_v2 node type
 
-RTC_DATA_ATTR uint32_t rtcSleepSeconds = DEFAULT_SLEEP_S;
+static uint32_t txIntervalMs = DEFAULT_TX_INTERVAL_MS;
+static uint32_t lastTxMs     = 0;
+static bool     joined       = false;
 
 HardwareSerial loraSerial(1);
 rn2xx3 myLora(loraSerial);
@@ -72,9 +68,9 @@ static SensorReading readSensorData() {
     return scenarios[random(0, 5)];
 }
 
-// Packs reading into 13-byte payload. No XOR; LoRaWAN AES-128 handles encryption.
-// tempTenthsC is cast to uint16_t (two's complement) — server decoder must cast back
-// to int16_t to recover negative temperatures.
+// Packs reading into 13-byte payload.
+// tempTenthsC is cast to uint16_t (two's complement) — server decoder must
+// cast back to int16_t to recover negative temperatures.
 static void buildPayload(const SensorReading& r, uint8_t* out) {
     out[0] = (DEVICE_ID >> 24) & 0xFF;
     out[1] = (DEVICE_ID >> 16) & 0xFF;
@@ -115,33 +111,36 @@ static bool initAndJoin() {
     delay(2000);
 
     loraSerial.begin(57600, SERIAL_8N1, RXD2, TXD2);
+    loraSerial.setRxBufferSize(1024);
+    loraSerial.setTimeout(1000);
 
-    // autobaud can fail if the module isn't ready yet; retry once.
     myLora.autobaud();
     String eui = myLora.hweui();
     if (eui.length() == 0) {
-        DBGLN("Module not ready, retrying...");
+        Serial.println("Module not ready, retrying autobaud...");
         delay(1000);
         myLora.autobaud();
         eui = myLora.hweui();
     }
 
-    DBG("DevEUI: ");
-    DBGLN(eui);
+    if (eui.length() == 0) {
+        Serial.println("Communication with RN2xx3 unsuccessful. Power cycle the board.");
+        return false;
+    }
 
-    DBGLN("Joining Cibicom (OTAA)...");
+    Serial.print("When using OTAA, register this DevEUI: ");
+    Serial.println(eui);
+    Serial.print("RN2xx3 firmware version: ");
+    Serial.println(myLora.sysver());
+
+    Serial.println("Trying to join Cibicom (OTAA)...");
     bool ok = myLora.initOTAA(APPEUI, APPKEY);
-    DBGLN(ok ? "Joined." : "Join failed.");
+    if (ok) {
+        Serial.println("Successfully joined the network.");
+    } else {
+        Serial.println("Unable to join. Are your keys correct, and do you have Cibicom coverage?");
+    }
     return ok;
-}
-
-static void goToDeepSleep() {
-    DBG("Sleeping for ");
-    DBG(rtcSleepSeconds);
-    DBGLN(" s.");
-    Serial.flush();
-    esp_sleep_enable_timer_wakeup((uint64_t)rtcSleepSeconds * 1000000ULL);
-    esp_deep_sleep_start();
 }
 
 void setup() {
@@ -149,69 +148,72 @@ void setup() {
     pinMode(LED_PIN, OUTPUT);
     digitalWrite(LED_PIN, LOW);
     randomSeed(esp_random());
-    delay(100);
+    delay(1000);
 
-    DBGLN("=== Transmitter v2 waking ===");
+    Serial.println("=== Transmitter v2 starting ===");
 
-    if (!initAndJoin()) {
-        DBGLN("Join failed - sleeping.");
-        goToDeepSleep();
+    joined = initAndJoin();
+}
+
+void loop() {
+    if (!joined) {
+        Serial.println("Not joined. Retrying in 10 s...");
+        delay(10000);
+        joined = initAndJoin();
+        return;
     }
 
-    // Build and send sensor payload.
+    uint32_t now = millis();
+    if (now - lastTxMs < txIntervalMs) {
+        return;
+    }
+    lastTxMs = now;
+
+    digitalWrite(LED_PIN, HIGH);
+
     SensorReading r = readSensorData();
-    DBG("Scenario: ");
-    DBGLN(r.label);
+    Serial.print("Scenario: ");
+    Serial.println(r.label);
 
     uint8_t payload[13];
     buildPayload(r, payload);
     String hexPayload = toHex(payload, 13);
-    DBG("TX payload: ");
-    DBGLN(hexPayload);
+    Serial.print("TXing: ");
+    Serial.println(hexPayload);
 
-    TX_RETURN_TYPE result = myLora.txCommand("mac tx uncnf 1 ", hexPayload, false);
-    DBG("TX result: ");
-    DBGLN(result == TX_SUCCESS  ? "TX_SUCCESS"
-        : result == TX_WITH_RX ? "TX_WITH_RX"
-                               : "TX_FAIL");
+    TX_RETURN_TYPE result = myLora.txCommand("mac tx uncnf 2 ", hexPayload, false);
+    Serial.print("TX result: ");
+    Serial.println(result == TX_SUCCESS  ? "TX_SUCCESS"
+                 : result == TX_WITH_RX ? "TX_WITH_RX"
+                                        : "TX_FAIL");
 
-    if (result == TX_FAIL) {
-        // No RX window opened, so no downlink possible. Any queued frequency
-        // update on the server will be delivered on the next successful TX.
-        DBGLN("TX failed - sleeping.");
-        goToDeepSleep();
-    }
+    if (result == TX_WITH_RX) {
+        String rx = myLora.getRx();
+        if (rx.length() == 4) {  // 2 bytes = 4 hex chars
+            uint8_t hi = (uint8_t)strtol(rx.substring(0, 2).c_str(), nullptr, 16);
+            uint8_t lo = (uint8_t)strtol(rx.substring(2, 4).c_str(), nullptr, 16);
+            uint32_t newInterval = ((uint32_t)((uint16_t)hi << 8 | lo)) * 1000UL;
 
-    // Check for frequency-update downlink.
-    String rx = myLora.getRx();
-    if (rx.length() == 4) {  // 2 bytes = 4 hex chars
-        uint8_t hi = (uint8_t)strtol(rx.substring(0, 2).c_str(), nullptr, 16);
-        uint8_t lo = (uint8_t)strtol(rx.substring(2, 4).c_str(), nullptr, 16);
-        uint16_t newSleep = ((uint16_t)hi << 8) | lo;
-
-        if (newSleep >= MIN_SLEEP_S && newSleep <= MAX_SLEEP_S) {
-            rtcSleepSeconds = newSleep;
-            DBG("Freq update: sleep = ");
-            DBG(rtcSleepSeconds);
-            DBGLN(" s.");
-        } else if (newSleep == 0) {
-            DBGLN("Freq downlink = 0, keeping current interval.");
+            if (newInterval >= MIN_TX_INTERVAL_MS && newInterval <= MAX_TX_INTERVAL_MS) {
+                txIntervalMs = newInterval;
+                Serial.print("Interval updated to ");
+                Serial.print(txIntervalMs / 1000);
+                Serial.println(" s.");
+            } else if (newInterval == 0) {
+                Serial.println("Downlink = 0, keeping current interval.");
+            } else {
+                Serial.print("Downlink interval out of range (");
+                Serial.print(newInterval / 1000);
+                Serial.println(" s), ignoring.");
+            }
+        } else if (rx.length() > 0) {
+            Serial.print("Unexpected downlink (");
+            Serial.print(rx.length() / 2);
+            Serial.println(" bytes), ignoring.");
         } else {
-            DBG("Freq downlink out of range (");
-            DBG(newSleep);
-            DBGLN(" s), ignoring.");
+            Serial.println("No downlink data.");
         }
-    } else if (rx.length() > 0) {
-        DBG("Unexpected downlink (");
-        DBG(rx.length() / 2);
-        DBGLN(" bytes), ignoring.");
-    } else {
-        DBGLN("No downlink.");
     }
 
-    goToDeepSleep();
-}
-
-void loop() {
-    // Never reached; setup() always ends in deep sleep.
+    digitalWrite(LED_PIN, LOW);
 }

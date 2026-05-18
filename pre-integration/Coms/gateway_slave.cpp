@@ -45,6 +45,8 @@ static const char* APPKEY = "4E50C01541A6DDDFA8FB1649F6259F2F";  // 32 hex chars
 // ---------- Pins ----------
 #define RXD2      18
 #define TXD2      19
+#define RXD3      16
+#define TXD3      17
 #define RST_PIN   23
 #define LED_PIN    2
 
