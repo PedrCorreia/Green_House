@@ -1,27 +1,25 @@
 /*
   Board: ESP32 (DevKit / WROOM)
   Role:  LoRaWAN serial bridge. Receives "FREQ:<seconds>\n" from the main
-         gateway over UART (Serial), sends it as a 2-byte big-endian
+         gateway over UART2 (pins 16/17), sends it as a 2-byte big-endian
          LoRaWAN uplink on port 2 to Cibicom/Loriot, and periodically sends
          a tiny poll uplink so queued Class A downlinks can be received.
 
   Setup:
     1. Register this device on iotnet.teracom.dk (OTAA, "Generate all except DevEUI").
     2. Flash with APPEUI/APPKEY filled in from the Loriot console.
-    3. In production: connect main gateway TX -> ESP32 RX via a separate UART.
-       For bench testing only: use shared USB serial (monitor will mix debug and
-       protocol output, so disable DEBUG below when running the real gateway).
+    3. Wire: slave GPIO17 (TX) -> main gateway GPIO18 (RX)
+             slave GPIO16 (RX) <- main gateway GPIO19 (TX)
 
-  Serial commands from main gateway:
+  UART2 bridge commands from main gateway (RXD3=16, TXD3=17):
     FREQ:<uint16>\n   e.g. "FREQ:120\n" -> sets transmitter_v2 sleep to 120 s
-  Responses:
+  Responses back to main gateway:
     OK\n    LoRaWAN uplink confirmed sent
     ERR\n   Join not established or TX failed
 
   Debug output:
-    Define DEBUG to enable verbose prints on Serial.
-    Leave undefined (or set 0) when wired to the real gateway to keep the
-    command channel clean.
+    Define DEBUG to enable verbose prints on Serial (USB).
+    The command channel is always on UART2 regardless of DEBUG.
 */
 
 #include <Arduino.h>
@@ -59,6 +57,7 @@ static const char* APPKEY = "4E50C01541A6DDDFA8FB1649F6259F2F";  // 32 hex chars
 #define POLL_PAYLOAD_HEX  "00"
 
 HardwareSerial loraSerial(1);
+HardwareSerial bridgeSerial(2);  // UART2: command bridge to main gateway (pins 16/17)
 rn2xx3 myLora(loraSerial);
 
 static bool joined = false;
@@ -218,6 +217,7 @@ static void pollForQueuedDownlinks() {
 
 void setup() {
     Serial.begin(115200);
+    bridgeSerial.begin(115200, SERIAL_8N1, RXD3, TXD3);
     pinMode(LED_PIN, OUTPUT);
     digitalWrite(LED_PIN, LOW);
     delay(100);
@@ -244,23 +244,24 @@ void loop() {
         return;
     }
 
-    // Poll for FREQ command from main gateway.
-    if (Serial.available()) {
-        String line = Serial.readStringUntil('\n');
+    // Poll for commands from main gateway over UART2 bridge.
+    if (bridgeSerial.available()) {
+        String line = bridgeSerial.readStringUntil('\n');
         line.trim();
 
         if (line.startsWith("FREQ:")) {
             int val = line.substring(5).toInt();
             if (val <= 0 || val > 65535) {
-                Serial.println("ERR: bad FREQ value");
+                bridgeSerial.println("ERR: bad FREQ value");
+                DBG("Bridge ERR: bad FREQ value: "); DBGLN(line);
                 return;
             }
             TX_RETURN_TYPE result = sendFreq((uint16_t)val);
             bool ok = (result == TX_SUCCESS || result == TX_WITH_RX);
-            Serial.println(ok ? "OK" : "ERR");
+            bridgeSerial.println(ok ? "OK" : "ERR");
         } else if (line.length() > 0) {
-            Serial.print("Unknown command: ");
-            Serial.println(line);
+            DBG("Bridge unknown cmd: "); DBGLN(line);
+            bridgeSerial.println("ERR: unknown command");
         }
     }
 

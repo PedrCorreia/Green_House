@@ -38,11 +38,15 @@
 #define TOPIC_PING      "esp32/myroom123/ping"
 
 // ---------- Pins ----------
-#define LED_PIN          4     
-// ------------- TAKE NOTICE PINS ARE UPDATED ---------------------------
-#define LORA_UART_RX_PIN 16    // ESP32 GPIO18 -> RN2483 TX
-#define LORA_UART_TX_PIN 17    // ESP32 GPIO19 -> RN2483 RX
-#define RN2483_RST_PIN   2
+#define LED_PIN           4
+#define LORA_UART_RX_PIN  16   // GPIO16 <- RN2483 TX
+#define LORA_UART_TX_PIN  17   // GPIO17 -> RN2483 RX
+#define RN2483_RST_PIN    2
+#define SLAVE_UART_RX_PIN 18   // GPIO18 <- gateway_slave TX (GPIO17)
+#define SLAVE_UART_TX_PIN 19   // GPIO19 -> gateway_slave RX (GPIO16)
+
+// ---------- Slave bridge UART ----------
+#define SLAVE_BAUD_RATE   115200UL
 
 // ---------- LoRa radio settings (must match sensor node) ----------
 #define LORA_BAUD_RATE   57600UL
@@ -119,6 +123,7 @@ bool isApprovedDevice(uint32_t id) {
 WiFiClient    espClient;
 PubSubClient  mqttClient(espClient);
 HardwareSerial loraSerial(1);
+HardwareSerial slaveSerial(2);   // UART2: bridge to gateway_slave (pins 18/19)
 
 bool loraReady = false;
 bool ledState  = false;
@@ -154,6 +159,9 @@ void publishStatus(const String& msg);
 void publishLightControlState();
 void setLed(bool on);
 void handleSerialLightControlInput();
+
+void sendToSlave(const String& cmd);
+void handleSlaveSerial();
 
 bool   initLoRa();
 String sendLoRaCommand(const String& cmd, int timeoutMs);
@@ -201,6 +209,8 @@ void setup() {
     while (true) { delay(1000); }
   }
 
+  slaveSerial.begin(SLAVE_BAUD_RATE, SERIAL_8N1, SLAVE_UART_RX_PIN, SLAVE_UART_TX_PIN);
+
   lastPingTime      = millis();
   lastHeartbeatTime = millis();
   Serial.println("Gateway ready.");
@@ -236,6 +246,7 @@ void loop() {
   }
 
   handleSerialLightControlInput();
+  handleSlaveSerial();
 }
 
 void connectToWiFi() {
@@ -399,6 +410,31 @@ void handleSerialLightControlInput() {
   }
 }
 
+
+// Send a command line to the gateway slave over UART2.
+// Example: sendToSlave("FREQ:120")
+void sendToSlave(const String& cmd) {
+  slaveSerial.print(cmd);
+  slaveSerial.print('\n');
+  Serial.print("-> Slave: ");
+  Serial.println(cmd);
+}
+
+// Read and process any lines coming back from the gateway slave.
+// Called every loop iteration; add application logic where marked.
+void handleSlaveSerial() {
+  while (slaveSerial.available()) {
+    String line = slaveSerial.readStringUntil('\n');
+    line.trim();
+    if (line.length() == 0) continue;
+
+    Serial.print("<- Slave: ");
+    Serial.println(line);
+
+    // TODO: process slave responses / forwarded sensor data here.
+    // e.g. if (line == "OK") { ... } else if (line.startsWith("DATA:")) { ... }
+  }
+}
 
 bool initLoRa() {
   pinMode(RN2483_RST_PIN, OUTPUT);
