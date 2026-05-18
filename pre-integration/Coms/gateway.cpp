@@ -432,7 +432,11 @@ void handleSlaveSerial() {
     Serial.println(line);
 
     // TODO: process slave responses / forwarded sensor data here.
-    // e.g. if (line == "OK") { ... } else if (line.startsWith("DATA:")) { ... }
+    // we need to parse the payload from the slave and publish it to MQTT just like we do for directly received LoRa packets
+    //it needs to be in the same SensorData format, so we can reuse publishSensorData() and the MQTT topic structure. The slave can just forward the raw hex payload it receives from its RN2483, and we can parse it here. This way we can keep the slave's code very simple (just RN2483 config + receive + forward) and put all the logic in the main gateway code where we already have all the parsing/publishing functions.
+    sensorData temp;
+    parseSensorPayload(line, temp);
+    publishSensorData(temp, temp.lux < LIGHT_THRESHOLD_LUX);
   }
 }
 

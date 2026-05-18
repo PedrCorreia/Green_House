@@ -166,7 +166,6 @@ static void printDownlinkIfPresent(TX_RETURN_TYPE result) {
     if (result != TX_WITH_RX) return;
 
     String rx = myLora.getRx();
-    Serial.print("RX HEX: ");
     Serial.println(rx);
     printDecodedDownlink(rx);
 }
