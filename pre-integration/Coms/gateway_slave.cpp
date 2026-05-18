@@ -84,6 +84,8 @@ static bool hexToBytes(const String& hex, uint8_t* out, size_t outLen) {
 }
 
 static bool initAndJoin() {
+    DBGLN("[INIT] Resetting RN2483...");
+    bridgeSerial.print("TEST:");
     pinMode(RST_PIN, OUTPUT);
     digitalWrite(RST_PIN, LOW);
     delay(200);
@@ -91,13 +93,20 @@ static bool initAndJoin() {
     delay(1000);
 
     loraSerial.begin(57600, SERIAL_8N1, RXD2, TXD2);
+    DBGLN("[INIT] Running autobaud...");
     myLora.autobaud();
-    DBG("DevEUI: ");
-    DBGLN(myLora.hweui());
 
-    DBGLN("Joining Cibicom (OTAA)...");
+    String eui = myLora.hweui();
+    DBG("[INIT] DevEUI: ");
+    DBGLN(eui.length() ? eui : "<no response>");
+
+    String ver = myLora.sysver();
+    DBG("[INIT] Firmware: ");
+    DBGLN(ver.length() ? ver : "<no response>");
+
+    DBGLN("[JOIN] OTAA join attempt...");
     bool ok = myLora.initOTAA(APPEUI, APPKEY);
-    DBGLN(ok ? "Joined." : "Join failed. Will retry in 30 s.");
+    DBGLN(ok ? "[JOIN] Joined OK." : "[JOIN] Failed — will retry in 30 s.");
     return ok;
 }
 
@@ -166,8 +175,20 @@ static void printDownlinkIfPresent(TX_RETURN_TYPE result) {
     if (result != TX_WITH_RX) return;
 
     String rx = myLora.getRx();
+    rx.trim();
+
+    Serial.print("[RX] raw hex (");
+    Serial.print(rx.length() / 2);
+    Serial.print(" bytes): ");
     Serial.println(rx);
+
     printDecodedDownlink(rx);
+
+    // Forward 13-byte sensor payloads to main gateway.
+    if (rx.length() == 26) {
+        bridgeSerial.println(rx);
+        Serial.println("[RX] forwarded to gateway via bridge");
+    }
 }
 
 static TX_RETURN_TYPE sendHexUplink(uint8_t port, const String& hex) {
@@ -187,10 +208,15 @@ static TX_RETURN_TYPE sendFreq(uint16_t freq) {
     }
     hex.toUpperCase();
 
-    DBG("LoRaWAN TX freq=");
+    DBG("[TX] FREQ uplink freq=");
     DBG(freq);
+    DBG(" port=");
+    DBG(FREQ_PORT);
     DBG(" hex=");
-    DBGLN(hex);
+    DBG(hex);
+    DBG(" (");
+    DBG(hex.length() / 2);
+    DBGLN(" bytes)");
 
     return sendHexUplink(FREQ_PORT, hex);
 }
@@ -205,13 +231,11 @@ static void pollForQueuedDownlinks() {
     if (now - lastPollMs < POLL_INTERVAL_MS) return;
 
     lastPollMs = now;
+    DBGLN("[POLL] Sending poll uplink...");
     TX_RETURN_TYPE result = sendPoll();
-    DBG("Poll result: ");
+    DBG("[POLL] Result: ");
     DBGLN(result == TX_SUCCESS ? "TX_SUCCESS" :
-          result == TX_WITH_RX ? "TX_WITH_RX" : "TX_FAIL");
-    if (result == TX_FAIL) {
-        DBGLN("Poll TX failed.");
-    }
+          result == TX_WITH_RX ? "TX_WITH_RX (downlink received)" : "TX_FAIL");
 }
 
 void setup() {
@@ -222,6 +246,7 @@ void setup() {
     delay(100);
 
     DBGLN("=== Gateway Slave starting ===");
+    bridgeSerial.print("TEST1:");
 
     joined = initAndJoin();
     if (joined) {
@@ -234,11 +259,14 @@ void loop() {
     // Retry join if not established.
     if (!joined) {
         digitalWrite(LED_PIN, LOW);
-        delay(30000);
+        DBGLN("[LOOP] Not joined — draining bridge buffer, then waiting 30 s before retry...");
+        while (bridgeSerial.available()) bridgeSerial.read();
+        delay(10000);
         joined = initAndJoin();
         if (joined) {
             digitalWrite(LED_PIN, HIGH);
             lastPollMs = millis() - POLL_INTERVAL_MS;
+            DBGLN("[LOOP] Joined. Starting poll timer.");
         }
         return;
     }
@@ -247,20 +275,23 @@ void loop() {
     if (bridgeSerial.available()) {
         String line = bridgeSerial.readStringUntil('\n');
         line.trim();
+        DBG("[BRIDGE] Received: "); DBGLN(line);
 
         if (line.startsWith("FREQ:")) {
             int val = line.substring(5).toInt();
             if (val <= 0 || val > 65535) {
-                bridgeSerial.println("ERR: bad FREQ value");
-                DBG("Bridge ERR: bad FREQ value: "); DBGLN(line);
+                bridgeSerial.println("ERR");
+                DBGLN("[BRIDGE] ERR: FREQ value out of range");
                 return;
             }
+            DBG("[BRIDGE] Parsed FREQ="); DBGLN(val);
             TX_RETURN_TYPE result = sendFreq((uint16_t)val);
             bool ok = (result == TX_SUCCESS || result == TX_WITH_RX);
             bridgeSerial.println(ok ? "OK" : "ERR");
+            DBG("[BRIDGE] Response sent: "); DBGLN(ok ? "OK" : "ERR");
         } else if (line.length() > 0) {
-            DBG("Bridge unknown cmd: "); DBGLN(line);
-            bridgeSerial.println("ERR: unknown command");
+            DBGLN("[BRIDGE] Unknown command — sending ERR");
+            bridgeSerial.println("ERR");
         }
     }
 
