@@ -60,7 +60,7 @@ struct SensorReading {
 static SensorReading readSensorData() {
     static const SensorReading scenarios[] = {
         {  225, 55,  450, 1800, 0, 85, "normal" },
-        {  210, 60,   80, 1750, 0, 82, "too dark" },
+        {  210, 60,  420, 1750, 0, 82, "normal cool" },
         {  240, 40,  500, 3500, 0, 78, "dry soil" },
         {  220, 75,  300, 1900, 1, 80, "water leak" },
         {  230, 55,  400, 1850, 0, 12, "low battery" }
