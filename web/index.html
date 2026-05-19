@@ -1,0 +1,522 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ESP32 MQTT Bridge</title>
+  <script src="paho-mqtt.min.js"></script>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      max-width: 900px;
+      margin: 30px auto;
+      padding: 0 16px;
+      background: #f5f5f5;
+      color: #222;
+    }
+
+    h1 {
+      margin-bottom: 8px;
+    }
+
+    .card {
+      background: white;
+      border-radius: 10px;
+      padding: 16px;
+      margin-bottom: 16px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+    }
+
+    .status {
+      font-weight: bold;
+      margin-bottom: 10px;
+    }
+
+    .connected {
+      color: green;
+    }
+
+    .disconnected {
+      color: red;
+    }
+
+    button {
+      padding: 10px 16px;
+      margin-right: 10px;
+      margin-top: 8px;
+      font-size: 16px;
+      cursor: pointer;
+    }
+
+    #messages {
+      width: 100%;
+      height: 320px;
+      resize: vertical;
+      font-family: monospace;
+      padding: 10px;
+      box-sizing: border-box;
+    }
+
+    input[type="text"] {
+      width: 100%;
+      padding: 10px;
+      font-size: 15px;
+      box-sizing: border-box;
+      margin-top: 8px;
+    }
+
+    .small {
+      color: #555;
+      font-size: 14px;
+    }
+
+    code {
+      background: #eee;
+      padding: 2px 5px;
+      border-radius: 4px;
+    }
+
+    .sensor-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 12px;
+      margin-top: 12px;
+    }
+
+    .sensor-card {
+      background: #fafafa;
+      border: 1px solid #eee;
+      border-radius: 10px;
+      padding: 14px;
+      min-height: 82px;
+    }
+
+    .sensor-label {
+      color: #555;
+      font-size: 13px;
+      margin-bottom: 8px;
+      text-transform: uppercase;
+      letter-spacing: 0.03em;
+    }
+
+    .sensor-value {
+      font-size: 24px;
+      font-weight: bold;
+      line-height: 1.2;
+    }
+
+    .sensor-note {
+      color: #666;
+      font-size: 13px;
+      margin-top: 6px;
+    }
+
+    .waiting {
+      color: #666;
+      font-style: italic;
+      margin-top: 8px;
+    }
+
+    .leak-indicator {
+      display: inline-block;
+      border-radius: 999px;
+      padding: 8px 12px;
+      font-size: 16px;
+      font-weight: bold;
+    }
+
+    .leak-dry {
+      color: #0b6e28;
+      background: #e7f6eb;
+    }
+
+    .leak-alert {
+      color: #b00020;
+      background: #fde7ea;
+    }
+
+    .battery-shell {
+      width: 100%;
+      height: 14px;
+      border-radius: 999px;
+      background: #e5e5e5;
+      overflow: hidden;
+      margin-top: 10px;
+    }
+
+    .battery-fill {
+      height: 100%;
+      width: 0%;
+      transition: width 0.25s ease;
+      background: green;
+    }
+
+    .battery-good {
+      background: green;
+    }
+
+    .battery-warn {
+      background: #d8a100;
+    }
+
+    .battery-low {
+      background: red;
+    }
+  </style>
+</head>
+<body>
+  <h1>ESP32 ↔ MQTT ↔ Browser Bridge</h1>
+  <p class="small">
+    Broker: <code>broker.emqx.io</code> |
+    WebSocket: <code>wss://broker.emqx.io:8084/mqtt</code> |
+    Control topic: <code>esp32/myroom123/control</code> |
+    Status topic: <code>esp32/myroom123/status</code> |
+    Ping topic: <code>esp32/myroom123/ping</code>
+  </p>
+
+  <div class="card">
+    <div id="connectionStatus" class="status disconnected">Disconnected</div>
+    <button onclick="connectMQTT()">Connect</button>
+    <button onclick="disconnectMQTT()">Disconnect</button>
+  </div>
+
+  <div class="card">
+    <h3>Send command to ESP32</h3>
+    <button onclick="sendCommand('ON')">LED ON</button>
+    <button onclick="sendCommand('OFF')">LED OFF</button>
+    <button onclick="triggerManualPing()">Trigger Manual Ping (wake nodes now)</button>
+
+    <div style="margin-top:16px;">
+      <label for="customMessage"><strong>Send custom control message:</strong></label>
+      <input id="customMessage" type="text" placeholder="Type a command, e.g. ON or OFF" />
+      <button onclick="sendCustomMessage()">Send Custom Message</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <h3>Live Sensor Dashboard</h3>
+    <div id="sensorWaiting" class="waiting">Waiting for data...</div>
+
+    <div id="sensorGrid" class="sensor-grid" style="display:none;">
+      <div class="sensor-card">
+        <div class="sensor-label">Device ID</div>
+        <div id="deviceIdValue" class="sensor-value">—</div>
+        <div id="nodeTypeValue" class="sensor-note">—</div>
+      </div>
+
+      <div class="sensor-card">
+        <div class="sensor-label">Temperature</div>
+        <div id="temperatureValue" class="sensor-value">—</div>
+      </div>
+
+      <div class="sensor-card">
+        <div class="sensor-label">Humidity</div>
+        <div id="humidityValue" class="sensor-value">—</div>
+      </div>
+
+      <div class="sensor-card">
+        <div class="sensor-label">Lux</div>
+        <div id="luxValue" class="sensor-value">—</div>
+        <div class="sensor-note">Raw light value</div>
+      </div>
+
+      <div class="sensor-card">
+        <div class="sensor-label">Soil Moisture</div>
+        <div id="soilValue" class="sensor-value">—</div>
+        <div class="sensor-note">Raw ADC, uncalibrated</div>
+      </div>
+
+      <div class="sensor-card">
+        <div class="sensor-label">Water Leakage</div>
+        <div id="leakValue" class="leak-indicator leak-dry">—</div>
+      </div>
+
+      <div class="sensor-card">
+        <div class="sensor-label">Battery</div>
+        <div id="batteryValue" class="sensor-value">—</div>
+        <div class="battery-shell">
+          <div id="batteryFill" class="battery-fill battery-good"></div>
+        </div>
+      </div>
+
+      <div class="sensor-card">
+        <div class="sensor-label">Last Updated</div>
+        <div id="lastUpdatedValue" class="sensor-value">—</div>
+      </div>
+
+      <div class="sensor-card">
+        <div class="sensor-label">Light State</div>
+        <div id="lightStateValue" class="sensor-value">OFF</div>
+        <div id="lightDeviceValue" class="sensor-note">Device: 0x00000005</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h3>Incoming messages from <code>esp32/myroom123/status</code></h3>
+    <textarea id="messages" readonly></textarea>
+    <div style="margin-top:10px;">
+      <button onclick="clearMessages()">Clear Log</button>
+    </div>
+  </div>
+
+  <script>
+    const brokerHost = "broker.emqx.io";
+    const brokerPort = 8084;
+    const brokerPath = "/mqtt";
+
+    const topicControl = "esp32/myroom123/control";
+    const topicStatus = "esp32/myroom123/status";
+    const topicPing = "esp32/myroom123/ping";
+
+    let client = null;
+    let reconnectTimeout = null;
+    let manualDisconnect = false;
+
+    function setStatus(text, connected) {
+      const el = document.getElementById("connectionStatus");
+      el.textContent = text;
+      el.className = "status " + (connected ? "connected" : "disconnected");
+    }
+
+    function logMessage(msg) {
+      const box = document.getElementById("messages");
+      const timestamp = new Date().toLocaleTimeString();
+      box.value += `[${timestamp}] ${msg}\n`;
+      box.scrollTop = box.scrollHeight;
+      console.log(msg);
+    }
+
+    function clearMessages() {
+      document.getElementById("messages").value = "";
+    }
+
+    function connectMQTT() {
+      try {
+        if (!window.Paho) {
+          logMessage("Paho library not loaded.");
+          setStatus("Disconnected", false);
+          return;
+        }
+
+        if (client && client.isConnected()) {
+          logMessage("Already connected.");
+          return;
+        }
+
+        manualDisconnect = false;
+
+        const clientId = "webclient_" + Math.random().toString(16).substring(2, 10);
+        logMessage(`Creating client with ID: ${clientId}`);
+        logMessage(`Connecting to wss://${brokerHost}:${brokerPort}${brokerPath}`);
+
+        client = new Paho.Client(
+          brokerHost,
+          Number(brokerPort),
+          brokerPath,
+          clientId
+        );
+
+        client.onConnectionLost = onConnectionLost;
+        client.onMessageArrived = onMessageArrived;
+
+        setStatus("Connecting...", false);
+
+        client.connect({
+          useSSL: true,
+          timeout: 10,
+          mqttVersion: 4, // MQTT 3.1.1
+          cleanSession: true,
+          onSuccess: onConnect,
+          onFailure: onFailure
+        });
+      } catch (err) {
+        setStatus("Disconnected", false);
+        logMessage("JS exception during connect: " + err.message);
+        console.error(err);
+      }
+    }
+
+    function onConnect() {
+      setStatus("Connected", true);
+      logMessage("Connected to broker.");
+
+      client.subscribe(topicStatus, {
+        qos: 0,
+        onSuccess: function() {
+          logMessage(`Subscribed to ${topicStatus}`);
+        },
+        onFailure: function(err) {
+          logMessage("Subscribe failed: " + JSON.stringify(err));
+        }
+      });
+    }
+
+    function onFailure(err) {
+      setStatus("Disconnected", false);
+      logMessage("Connection failed: " + JSON.stringify(err));
+      scheduleReconnect();
+    }
+
+    function onConnectionLost(responseObject) {
+      setStatus("Disconnected", false);
+
+      if (responseObject && responseObject.errorCode !== 0) {
+        logMessage("Connection lost: " + responseObject.errorMessage);
+      } else {
+        logMessage("Disconnected.");
+      }
+
+      if (!manualDisconnect) {
+        scheduleReconnect();
+      }
+    }
+
+    function scheduleReconnect() {
+      if (reconnectTimeout) return;
+
+      reconnectTimeout = setTimeout(() => {
+        reconnectTimeout = null;
+        logMessage("Attempting reconnect...");
+        connectMQTT();
+      }, 3000);
+    }
+
+    function disconnectMQTT() {
+      manualDisconnect = true;
+
+      if (reconnectTimeout) {
+        clearTimeout(reconnectTimeout);
+        reconnectTimeout = null;
+      }
+
+      if (client && client.isConnected()) {
+        client.disconnect();
+        logMessage("Disconnected from broker.");
+      } else {
+        logMessage("Disconnect pressed, but client was not connected.");
+      }
+
+      setStatus("Disconnected", false);
+    }
+
+    function onMessageArrived(message) {
+      try {
+        const parsed = JSON.parse(message.payloadString);
+        if (parsed && parsed.type === "sensorData") {
+          updateSensorDashboard(parsed);
+        } else if (parsed && parsed.type === "LED") {
+          updateLightState(parsed);
+        }
+      } catch (err) {
+        // Non-JSON status strings are expected from the existing ESP32 code path.
+      }
+
+      logMessage(`Topic: ${message.destinationName} | Message: ${message.payloadString}`);
+    }
+
+    function updateSensorDashboard(data) {
+      document.getElementById("sensorWaiting").style.display = "none";
+      document.getElementById("sensorGrid").style.display = "grid";
+
+      const deviceId = data.deviceId || "—";
+      const nodeType = data.nodeType || decodeNodeTypeFromDeviceId(deviceId);
+      const battery = clampNumber(Number(data.battery), 0, 100);
+      const leak = Boolean(data.waterLeak);
+
+      document.getElementById("deviceIdValue").textContent = deviceId;
+      document.getElementById("nodeTypeValue").textContent = `Type: ${nodeType}`;
+      document.getElementById("temperatureValue").textContent = `${Number(data.temperature).toFixed(1)} °C`;
+      document.getElementById("humidityValue").textContent = `${Number(data.humidity)} %`;
+      document.getElementById("luxValue").textContent = Number(data.lux);
+      document.getElementById("soilValue").textContent = Number(data.soilMoisture);
+
+      const leakEl = document.getElementById("leakValue");
+      leakEl.textContent = leak ? "⚠ LEAK DETECTED" : "DRY";
+      leakEl.className = "leak-indicator " + (leak ? "leak-alert" : "leak-dry");
+
+      document.getElementById("batteryValue").textContent = `${battery} %`;
+      const batteryFill = document.getElementById("batteryFill");
+      batteryFill.style.width = `${battery}%`;
+      batteryFill.className = "battery-fill " + getBatteryClass(battery);
+
+      document.getElementById("lastUpdatedValue").textContent = new Date().toLocaleTimeString();
+    }
+
+    function updateLightState(data) {
+      document.getElementById("sensorWaiting").style.display = "none";
+      document.getElementById("sensorGrid").style.display = "grid";
+
+      const state = String(data.state || "OFF").toUpperCase();
+      const deviceId = data.deviceId || "0x00000005";
+
+      document.getElementById("lightStateValue").textContent = state === "ON" ? "ON" : "OFF";
+      document.getElementById("lightDeviceValue").textContent = `Device: ${deviceId}`;
+    }
+
+    function decodeNodeTypeFromDeviceId(deviceId) {
+      if (typeof deviceId !== "string" || !deviceId.startsWith("0x") || deviceId.length < 4) {
+        return "unknown";
+      }
+
+      const typeByte = deviceId.substring(2, 4).toUpperCase();
+      if (typeByte === "01") return "sensor";
+      if (typeByte === "02") return "light";
+      return "unknown";
+    }
+
+    function getBatteryClass(value) {
+      if (value < 20) return "battery-low";
+      if (value <= 50) return "battery-warn";
+      return "battery-good";
+    }
+
+    function clampNumber(value, min, max) {
+      if (Number.isNaN(value)) return min;
+      return Math.max(min, Math.min(max, value));
+    }
+
+    function sendCommand(command) {
+      if (!client || !client.isConnected()) {
+        logMessage("Cannot send: not connected.");
+        return;
+      }
+
+      const message = new Paho.Message(command);
+      message.destinationName = topicControl;
+      message.qos = 0;
+
+      client.send(message);
+      logMessage(`Sent to ${topicControl}: ${command}`);
+    }
+
+    function triggerManualPing() {
+      if (!client || !client.isConnected()) {
+        logMessage("Cannot trigger manual ping: not connected to MQTT broker.");
+        return;
+      }
+
+      const message = new Paho.Message("PING");
+      message.destinationName = topicPing;
+      message.qos = 0;
+
+      client.send(message);
+      logMessage(`Sent to ${topicPing}: PING`);
+    }
+
+    function sendCustomMessage() {
+      const value = document.getElementById("customMessage").value.trim();
+      if (!value) {
+        logMessage("Custom message is empty.");
+        return;
+      }
+      sendCommand(value);
+    }
+
+    window.addEventListener("load", () => {
+      logMessage("Page loaded.");
+      connectMQTT();
+    });
+  </script>
+</body>
+</html>
