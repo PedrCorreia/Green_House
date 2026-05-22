@@ -1,7 +1,7 @@
 [Repository Root](../../../README.md) > [PCB Overview](../../PCB_OVERVIEW.md) > Microcontroller Unit
 
 # MCU — ESP32 DevKit V1 PCB Documentation
-**Last Modified:** 09/04/2026  
+**Last Modified:** 22/05/2026  
 **Subsystem:** Microcontroller Unit  
 **Schematic Sheet:** ESP32 DevKit V1  
 
@@ -53,10 +53,10 @@
 | 1 | EN | NC | Reset — leave floating |
 | 2 | GPIO36 | NC | Input only |
 | 3 | GPIO39 | NC | Input only |
-| 4 | GPIO34 | LIGHT_SENS | ADC1_CH6 — KY-018 photoresistor analog |
-| 5 | GPIO35 | WATER_LEAK | ADC1_CH7 — water leakage digital |
+| 4 | GPIO34 | BATT_SENSE | ADC1_CH6 — Battery voltage divider midpoint |
+| 5 | GPIO35 | LIGHT | ADC1_CH7 — Embedded GL5528 LDR analog |
 | 6 | GPIO32 | SOIL_MOIST | ADC1_CH4 — soil moisture analog |
-| 7 | GPIO33 | NC | Input only |
+| 7 | GPIO33 | WATER_LEAK | Digital IN — water leakage sensor DO |
 | 8 | GPIO25 | LED_CTRL | DAC1 — LED control PWM |
 | 9 | GPIO26 | NC | |
 | 10 | GPIO27 | NC | |
@@ -99,11 +99,12 @@
 | I2C_SDA | GPIO21 | I2C | OLED |
 | I2C_SCL | GPIO22 | I2C | OLED |
 | LED_CTRL | GPIO25 | PWM/Digital | LED module |
-| WATER_LEAK | GPIO35 | Digital IN | Water sensor DO |
-| LIGHT_SENS | GPIO34 | ADC1 | KY-018 photoresistor |
+| WATER_LEAK | GPIO33 | Digital IN | Water sensor DO |
+| LIGHT | GPIO35 | ADC1 | Embedded GL5528 LDR |
 | SOIL_MOIST | GPIO32 | ADC1 | Soil moisture AOUT |
+| BATT_SENSE | GPIO34 | ADC1 | Battery voltage divider |
 
-**GPIOs used: 10 / Free: 5**
+**GPIOs used: 11 / Free: 4**
 
 ---
 
@@ -140,6 +141,7 @@
 | Date | Change |
 |---|---|
 | 09/04/2026 | Initial GPIO assignment and documentation |
+| 22/05/2026 | GPIO reassignment: BATT_SENSE→GPIO34 (new), LIGHT→GPIO35, WATER_LEAK→GPIO33. Embedded LDR replaces KY-018 connector. |
 
 
 ---

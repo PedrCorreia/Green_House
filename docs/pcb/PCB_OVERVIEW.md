@@ -3,9 +3,9 @@
 # PCB Documentation — IoT Greenhouse Monitor
 **Project:** IoT LoRaWAN Greenhouse Monitoring System  
 **Group:** Group 5  
-**Last Modified:** 09/04/2026  
+**Last Modified:** 22/05/2026  
 **KiCad Version:** 10.0.0  
-**Board Revision:** v1.0  
+**Board Revision:** v1.1  
 
 ---
 
@@ -63,7 +63,7 @@ U1 AP2112K-3.3 (LDO 3.3V 600mA)
 
 | Net | Source | Destinations |
 |---|---|---|
-| +3V3 | U1 VOUT | ESP32 3V3, J2 pin5, U3 VCC, J_SOIL, J_WATER, J_LIGHT, U2 VDD |
+| +3V3 | U1 VOUT | ESP32 3V3, J2 pin5, U3 VCC, J_SOIL, J_WATER, U2 VDD |
 | GND | Common | All components |
 | TH | ESP32 GPIO4 | U2 DHT22 DATA |
 | LORA_RX | ESP32 GPIO16 | J2 pin1 |
@@ -72,9 +72,10 @@ U1 AP2112K-3.3 (LDO 3.3V 600mA)
 | I2C_SDA | ESP32 GPIO21 | U3 OLED SDA |
 | I2C_SCL | ESP32 GPIO22 | U3 OLED SCL |
 | SOIL_MOIST | ESP32 GPIO32 | J_SOIL pin1 |
-| WATER_LEAK | ESP32 GPIO35 | J_WATER pin3 |
-| LIGHT_SENS | ESP32 GPIO34 | J_LIGHT pin3 |
+| WATER_LEAK | ESP32 GPIO33 | J_WATER pin3 |
+| LIGHT | ESP32 GPIO35 | R3 LDR midpoint (no connector) |
 | LED_CTRL | ESP32 GPIO25 | LED connector |
+| BATT_SENSE | ESP32 GPIO34 | R5/R6 voltage divider midpoint |
 
 ---
 
@@ -88,13 +89,17 @@ U1 AP2112K-3.3 (LDO 3.3V 600mA)
 | U6 | ESP32 DevKit V1 | DOIT_ESP32_DEVKIT_V1 | Main MCU |
 | Q1 | AO3401A | SOT-23-5 HandSoldering | P-ch MOSFET |
 | R1 | 10kΩ | R_Axial THT | Gate pull-down resistor |
-| R2 | 4.7kΩ | R_Axial THT | DHT22 data pull-up |
+| R3 | GL5528 LDR | LDR_Disc_D5.0mm THT | Embedded light sensor |
+| R4 | 10kΩ | R_Axial THT | LDR pull-down resistor |
+| R5 | 100kΩ | R_Axial THT | Battery divider top |
+| R6 | 100kΩ | R_Axial THT | Battery divider bottom |
 | C1 | 10µF | CP_Radial THT | LDO output bulk cap |
 | C2 | 10µF | CP_Radial THT | LDO input ceramic cap |
 | C3 | 100µF | CP_Radial THT | LDO input bulk cap |
 | C4 | 100µF | CP_Radial THT | LDO output bulk cap |
 | C5 | 100nF | C_Disc THT | DHT22 decoupling cap |
 | C6 | 100nF | C_Disc THT | ESP32 decoupling cap |
+| C7 | 100nF | C_Disc THT | LDR ADC noise filter |
 | J1 | Conn_01x02 | PinHeader 2.54mm | Battery input |
 | J2 | Conn_01x07_Socket | PinSocket 2.54mm | LoRa serial/power |
 | J3 | Conn_01x14_Socket | PinSocket 2.54mm | LoRa GPIO (mechanical) |
@@ -128,6 +133,7 @@ U1 AP2112K-3.3 (LDO 3.3V 600mA)
 
 | Date | Version | Author | Change |
 |---|---|---|---|
+| 22/05/2026 | v1.1 | Group 5 | Added battery voltage monitor (R5/R6), embedded LDR (R3/R4/C7), removed J_LIGHT, reassigned GPIO34→BATT_SENSE, GPIO35→LIGHT, GPIO33→WATER_LEAK |
 | 03/04/2026 | v0.1 | Group 5 | Initial schematic — power management |
 | 06/04/2026 | v0.2 | Group 5 | Added LoRa, OLED, sensor schematics |
 | 07/04/2026 | v0.3 | Group 5 | PCB layout started |

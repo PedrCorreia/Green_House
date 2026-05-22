@@ -49,19 +49,19 @@
 #define SLAVE_BAUD_RATE   115200UL
 
 // ---------- LoRa radio settings (must match sensor node) ----------
-#define LORA_BAUD_RATE   57600UL
-#define LORA_FREQ        868100000UL   // working TX/RX pair uses 868.1 MHz
-#define LORA_PWR         14
-#define LORA_SF          "sf12"
-#define LORA_AFCBW       "41.7"
-#define LORA_RXBW        125
-#define LORA_PRLEN       8
-#define LORA_CRC         "on"
-#define LORA_IQI         "off"
-#define LORA_CR          "4/5"
-#define LORA_SYNC        "12"
-#define LORA_BW          125
-#define LORA_WDT         60000UL       // RX watchdog ms; 0 = no timeout
+#define LORA_BAUD_RATE   57600UL       // Serial baud rate for RN2483 LoRa module communication
+#define LORA_FREQ        868100000UL   // LoRa frequency in Hz; working TX/RX pair uses 868.1 MHz
+#define LORA_PWR         14            // LoRa transmit power in dBm
+#define LORA_SF          "sf12"        // LoRa spreading factor (SF12 = max range, slowest speed)
+#define LORA_AFCBW       "41.7"        // AFC (Automatic Frequency Correction) bandwidth in kHz
+#define LORA_RXBW        125           // RX bandwidth in kHz (125 kHz standard)
+#define LORA_PRLEN       8             // LoRa preamble length in symbols
+#define LORA_CRC         "on"          // Enable CRC (Cyclic Redundancy Check) for packet integrity
+#define LORA_IQI         "off"         // IQ inversion disabled for normal operation
+#define LORA_CR          "4/5"         // Coding rate (4/5 = 4 info bits per 5 total transmitted bits)
+#define LORA_SYNC        "12"          // LoRa sync word (used as device network identifier)
+#define LORA_BW          125           // Bandwidth in kHz (125 kHz)
+#define LORA_WDT         60000UL       // RX watchdog timeout in ms; 0 = no timeout
 
 // ---------- Protocol ----------
 static const uint8_t LORA_PING_HEADER[4] = { 0x50, 0x49, 0x4E, 0x47 };  // "PING"
@@ -89,6 +89,7 @@ static const uint8_t SHARED_KEY[4] = { 0xA3, 0x7F, 0x2C, 0x91 };
 
 // ---------- Approved sensor node device IDs ----------
 // Approved sensor node device IDs. Add each node's DEVICE_ID here.
+//Static ID 
 static const uint32_t APPROVED_DEVICE_IDS[] = {
   0x01AABBCC   // sensor node 1
 };
@@ -105,24 +106,24 @@ bool isApprovedDevice(uint32_t id) {
 // ---------- Timing ----------
 #define PING_INTERVAL_MS         120000UL   // auto-ping every 2 min (test)
 #define POST_PING_WAIT_MS        10000UL    // listen this long for a sensor reply
-#define HEARTBEAT_INTERVAL_MS    60000UL
-#define MQTT_RECONNECT_INTERVAL  3000UL
-#define BOOT_OVERHEAD_MS         3000UL
-#define MIN_SLEEP_S              10UL
-#define MAX_SLEEP_S              65000UL
-#define MANUAL_PING_TIMEOUT_MS   150000UL
-#define RETRY_INTERVAL_MS        15000UL
-#define ACK_TIMEOUT_MS           5000UL
+#define HEARTBEAT_INTERVAL_MS    60000UL    // send periodic heartbeat status to MQTT broker every 60 sec
+#define MQTT_RECONNECT_INTERVAL  3000UL     // attempt MQTT reconnection every 3 sec if dropped
+#define BOOT_OVERHEAD_MS         3000UL     // allow 3 sec for sensor node to boot after wake signal
+#define MIN_SLEEP_S              10UL       // minimum sleep duration in seconds (safety floor)
+#define MAX_SLEEP_S              65000UL    // maximum sleep duration in seconds (stays within 16-bit limit)
+#define MANUAL_PING_TIMEOUT_MS   150000UL   // total timeout window for manual MQTT-triggered ping retries
+#define RETRY_INTERVAL_MS        15000UL    // delay between retry attempts when manual ping fails
+#define ACK_TIMEOUT_MS           5000UL     // timeout waiting for light node to acknowledge command
 // Small gap before sending the light command, so the sensor node's
 // post-TX RX window is definitely open by the time we transmit.
-#define LIGHT_CMD_PRE_DELAY_MS   400
+#define LIGHT_CMD_PRE_DELAY_MS   400        // delay in ms before TX light command after sensor reply TX completes
 
-#define LIGHT_THRESHOLD_LUX      200
-#define DESIRED_LUX_WHEN_DARK    500
+#define LIGHT_THRESHOLD_LUX      200        // lux level below which plant needs additional light
+#define DESIRED_LUX_WHEN_DARK    500        // target lux to maintain when ambient light is insufficient
 
 WiFiClient    espClient;
 PubSubClient  mqttClient(espClient);
-HardwareSerial loraSerial(1);
+HardwareSerial loraSerial(1);    // Bridge to mode
 HardwareSerial slaveSerial(2);   // UART2: bridge to gateway_slave (pins 18/19)
 
 bool loraReady = false;
@@ -133,9 +134,9 @@ unsigned long lastPingTime = 0;
 unsigned long lastHeartbeatTime = 0;
 unsigned long lastMqttReconnectAttempt = 0;
 
-void xorWithKey(uint8_t* data, size_t len) {
+void xorWithKey(uint8_t* data, size_t len) { // Ofoscates the data but relatively simple 
   for (size_t i = 0; i < len; i++) {
-    data[i] ^= SHARED_KEY[i % 4];
+    data[i] ^= SHARED_KEY[i % 4]; //Cycles through the 4-byte key repeatedly (key repeats every 4 bytes)
   }
 }
 
@@ -150,41 +151,46 @@ struct SensorData {
 };
 
 
-void connectToWiFi();
-void ensureWiFiConnected();
-bool connectToMQTT();
-void mqttCallback(char* topic, byte* payload, unsigned int length);
-void publishHeartbeat();
-void publishStatus(const String& msg);
-void publishLightControlState();
-void setLed(bool on);
-void handleSerialLightControlInput();
+// WiFi / MQTT functions
+void connectToWiFi();                                                        // Establish initial WiFi connection
+void ensureWiFiConnected();                                                  // Retry WiFi if connection drops
+bool connectToMQTT();                                                        // Connect to MQTT broker and subscribe to topics
+void mqttCallback(char* topic, byte* payload, unsigned int length);         // Handle incoming MQTT messages (ping/control commands)
+void publishHeartbeat();                                                     // Send periodic uptime/status message to MQTT
+void publishStatus(const String& msg);                                       // Publish a status message to MQTT and Serial
+void publishLightControlState();                                             // Publish current LED state as JSON to MQTT
+void setLed(bool on);                                                        // Turn gateway LED on/off and log status
+void handleSerialLightControlInput();                                        // Handle manual LED control from USB Serial (test shortcut)
 
-void sendToSlave(const String& cmd);
-void handleSlaveSerial();
+// Slave gateway communication (UART2 bridge)
+void sendToSlave(const String& cmd);                                         // Send command to gateway-slave over UART2
+void handleSlaveSerial();                                                    // Read and process responses from gateway-slave
 
-bool   initLoRa();
-String sendLoRaCommand(const String& cmd, int timeoutMs);
-String readLoRaLine(int timeoutMs);
-void   flushLoRaInput();
-void   stopRx();
+// LoRa radio control
+bool   initLoRa();                                                           // Initialize RN2483 module and configure LoRa parameters
+String sendLoRaCommand(const String& cmd, int timeoutMs);                   // Send AT command to RN2483 and get response
+String readLoRaLine(int timeoutMs);                                         // Read one line of text from RN2483 with timeout
+void   flushLoRaInput();                                                     // Clear any pending data in LoRa serial buffer
+void   stopRx();                                                             // Stop active RX listening on LoRa radio
 
-bool sendPing(const char* reason);
-bool manualPingWithRetry();
-bool waitForSensorReply(int timeoutMs);
-bool parseSensorPayload(const String& hexStr, SensorData& out);
-void publishSensorData(const SensorData& d, bool needsLight);
-uint16_t calculateNextSleepSeconds();
-bool sendLightCommand(uint32_t targetDeviceId, uint16_t desiredLux, uint16_t nextSleepS);
-bool sendLightControlCmd(bool turnOn);
-int  waitForLightAck(bool turnOn);
-String makeDevicePacket(uint32_t deviceId, uint8_t value);
-bool isApprovedDevice(uint32_t id);
+// Sensor ping and communication
+bool sendPing(const char* reason);                                           // Send wake-up PING to sensor nodes
+bool manualPingWithRetry();                                                  // Retry PING sequence when triggered via MQTT
+bool waitForSensorReply(int timeoutMs);                                      // Listen for sensor node reply after sending PING
+bool parseSensorPayload(const String& hexStr, SensorData& out);             // Decode 13-byte hex sensor payload into struct
+void publishSensorData(const SensorData& d, bool needsLight);               // Format sensor data as JSON and publish to MQTT
+uint16_t calculateNextSleepSeconds();                                        // Calculate next sleep interval for sensor node
+bool sendLightCommand(uint32_t targetDeviceId, uint16_t desiredLux, uint16_t nextSleepS); // Send lux & sleep data to sensor node
+bool sendLightControlCmd(bool turnOn);                                       // Send LED on/off command to light node via LoRa
+int  waitForLightAck(bool turnOn);                                           // Wait for light node to acknowledge command (returns 1=OK, 0=FAIL, -1=timeout)
+String makeDevicePacket(uint32_t deviceId, uint8_t value);                  // Create device ID + value packet and XOR encrypt it
 
-bool   hexToBytes(const String& hexStr, uint8_t* out, size_t outLen);
-String bytesToHex(const uint8_t* data, size_t len);
-int    hexNibble(char c);
-void xorWithKey(uint8_t* data, size_t len);
+// Utility functions
+bool isApprovedDevice(uint32_t id);                                          // Check if device ID is in whitelist
+bool   hexToBytes(const String& hexStr, uint8_t* out, size_t outLen);       // Convert hex string to byte array
+String bytesToHex(const uint8_t* data, size_t len);                         // Convert byte array to hex string
+int    hexNibble(char c);                                                    // Convert single hex character to 0-15 value
+void xorWithKey(uint8_t* data, size_t len);                                 // XOR encrypt/decrypt data with SHARED_KEY
 
 
 // =================================================================

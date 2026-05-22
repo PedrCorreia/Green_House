@@ -1,7 +1,7 @@
 [Repository Root](../../../README.md) > [PCB Overview](../../PCB_OVERVIEW.md) > Power Management
 
 # Power Management — PCB Documentation
-**Last Modified:** 03/04/2026  
+**Last Modified:** 22/05/2026  
 **Subsystem:** Power Management  
 **Schematic Sheet:** Power Management  
 
@@ -130,6 +130,43 @@ Ceramic (10µF):       Capacitor_THT:C_Disc_D5.0mm_W2.5mm_P5.00mm
 ```
 
 ⚠️ Verify polarity before soldering — + terminal faces +3V3/VIN, - terminal faces GND.
+
+---
+
+## Battery Voltage Monitor
+
+### Design Overview
+Resistor voltage divider taps the raw battery net (Net-(Q1-D)) to allow
+the ESP32 to read battery state of charge via ADC.
+
+```
+Net-(Q1-D) [3.7–4.2V]
+      |
+    [R5 100kΩ]
+      |
+      +──────→ BATT_SENSE → ESP32 GPIO34 (ADC1_CH6)
+      |
+    [R6 100kΩ]
+      |
+     GND
+```
+
+| 22/05/2026 | Added battery voltage monitor — R5/R6 100kΩ divider, BATT_SENSE net → GPIO34 |
+**Divider ratio:** 0.5 (equal resistors) → Vbat = Vadc × 2.0
+**ADC range at full charge (4.2V):** 2.1V — well within 3.3V ADC limit
+**Quiescent current:** 4.2V / 200kΩ = ~21µA — negligible
+
+### Components
+
+| Ref | Value | Package | Purpose |
+|---|---|---|---|
+| R5 | 100kΩ | R_Axial_DIN0207 THT | Divider top resistor |
+| R6 | 100kΩ | R_Axial_DIN0207 THT | Divider bottom resistor |
+
+**Net:** BATT_SENSE → GPIO34 (ADC1_CH6)
+
+⚠️ Tap point is Net-(Q1-D) — the post-MOSFET, pre-LDO node.
+Do NOT tap the +3V3 rail — it is regulated flat and useless for SOC measurement.
 
 ---
 

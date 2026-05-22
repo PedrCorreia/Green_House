@@ -1,7 +1,7 @@
 [Repository Root](../../../README.md) > [PCB Overview](../../PCB_OVERVIEW.md) > Sensors
 
 # Sensors — PCB Documentation
-**Last Modified:** 07/04/2026  
+**Last Modified:** 22/05/2026  
 **Subsystem:** Sensors  
 **Schematic Sheet:** Sensores  
 
@@ -111,9 +111,9 @@ Low-pass RC filter on AOUT line (10kΩ + 100nF) to reduce high-frequency noise b
 | Output | Digital (DO) |
 | Supply voltage | 3.3–5V |
 | Connector | 2.54mm 3-pin |
-| ESP32 pin | GPIO35 (ADC1_CH7) |
+| ESP32 pin | GPIO33 (ADC1_CH5) |
 | Net label | WATER_LEAK |
-| Last Modified | 06/04/2026 |
+| Last Modified | 22/05/2026 |
 
 **Datasheet:** (https://www.datasheethub.com/wp-content/uploads/2022/10/42240.pdf)
 
@@ -122,7 +122,7 @@ Low-pass RC filter on AOUT line (10kΩ + 100nF) to reduce high-frequency noise b
 |---|---|---|
 | 1 | +3V3 | |
 | 2 | GND | |
-| 3 | WATER_LEAK | DO → GPIO35 |
+| 3 | WATER_LEAK | DO → GPIO33 |
 
 **Footprint:**
 ```
@@ -138,47 +138,62 @@ J_WATER: Connector_PinHeader_2.54mm:PinSocket_1x03_P2.54mm_Vertical
 
 ---
 
-## Light Intensity Sensor (KY-018 Photoresistor)
+## Light Intensity Sensor (Embedded GL5528 LDR)
 
-![Light Intensity Schematic](../../images/pcb/SENSORS/LIGHT.png)
-### Component
+### Design Overview
+The external KY-018 module and J_LIGHT connector have been replaced by
+discrete components embedded directly on the PCB, replicating the KY-018
+internal circuit. Firmware lux formula is unchanged.
+
+```
++3V3
+  |
+[R3 GL5528 LDR]   ← resistance drops as light increases
+  |
+  +──────────→ LIGHT (GPIO35, ADC1_CH7)
+  |
+[C7 100nF]──GND   ← low-pass RC filter (~160Hz cutoff with R4)
+  |
+[R4 10kΩ]
+  |
+ GND
+```
+
+### Components
+
+| Ref | Value | Package | Purpose |
+|---|---|---|---|
+| R3 | GL5528 LDR | LDR_Disc_D5.0mm THT | Light sensing element |
+| R4 | 10kΩ | R_Axial_DIN0207 THT | Voltage divider pull-down |
+| C7 | 100nF | C_Disc_D5.0mm THT | Low-pass ADC noise filter |
+
 | Parameter | Value |
 |---|---|
-| Part | KY-018 Photoresistor Module |
-| Protocol | Analog Output |
-| Supply voltage | 3.3–5V |
-| ESP32 pin | GPIO34 (ADC1_CH6) |
-| Net label | LIGHT_SENS |
-| Last Modified | 09/04/2026 |
-
-**Datasheet:** N/A (Standard LDR voltage divider module)
-
-### PCB Connector — J_LIGHT
-| Pin | Net | Notes |
-|---|---|---|
-| 1 | +3V3 | |
-| 2 | GND | |
-| 3 | LIGHT_SENS | Analog DO → GPIO34 |
-
-**Footprint:**
-```
-J_LIGHT: Connector_PinHeader_2.54mm:PinSocket_1x03_P2.54mm_Vertical
-```
+| Part | GL5528 photoresistor |
+| Dark resistance | ~1MΩ |
+| 10 lux resistance | ~10–20kΩ |
+| Supply voltage | 3.3V |
+| ESP32 pin | GPIO35 (ADC1_CH7) |
+| Net label | LIGHT |
+| Last Modified | 22/05/2026 |
 
 ### Analog Output Notes
-- Measured using ADC to determine light range
-- The KY-018 contains a fixed resistor acting as a voltage divider with the LDR
-- Reads 0-4095 on the ESP32 (depending on brightness and 3V3 scaling)
+- Voltage at midpoint rises with more light (LDR resistance drops)
+- Lux formula: `resistance = 10000 * Vadc / (3.3 - Vadc); lux = 5000000 / resistance`
+- Reads 0–65535 lux range (clipped in firmware)
+- C7 + R4 form RC low-pass filter — reduces high-frequency ADC noise
 
 ### Physical Notes
-- Connected via cable running **outside** 3D enclosure
-- Sensor mounted facing upward for accurate ambient sunlight representation
+- R3 (LDR) placed at board edge, disc bent to face upward through enclosure lid
+- Enclosure requires 6mm hole directly above R3 for light access
+- R4 and C7 placed adjacent to R3
 
 ---
 
 ## PCB Layout Notes
 
-- All sensor connectors placed on same board edge (bottom) for clean cable management
+- All sensor connectors placed on same
+| 22/05/2026 | Embedded LDR circuit (R3/R4/C7) replaces J_LIGHT and KY-018 module. LIGHT net moved to GPIO35. WATER_LEAK moved to GPIO33. | board edge (bottom) for clean cable management
 - J_SOIL uses 2.0mm JST footprint — different from all other 2.54mm connectors
 - DHT22 placement near board edge for airflow access
 - Water leakage sensor connector near enclosure interior — short cable
