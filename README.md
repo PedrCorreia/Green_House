@@ -29,7 +29,7 @@ Multi-node greenhouse monitoring network with dual LoRa communication paths.
 | Soil Moisture | Capacitive | 0-100% |
 | Light Intensity | KY-018 | 0-4095 lux |
 | Battery Voltage | ADC | 0-5000 mV |
-| Water Leak | Digital | Legacy (no longer measured) |
+
 
 ### Technology Stack
 | Component | Technology |
@@ -40,24 +40,6 @@ Multi-node greenhouse monitoring network with dual LoRa communication paths.
 | PCB Design | KiCad 10.0.0 |
 | Communications | LoRa P2P, LoRaWAN (OTAA), WiFi, MQTT |
 
----
-
-## Repository Structure
-
-```
-config/              Credentials (Gitignored)
-src/                 Production Firmware (5 targets)
-  ├── sensor-node/
-  ├── lorawan-sensor-node/
-  ├── gateway/
-  ├── gateway-slave/
-  ├── light-node/
-  └── loriot_router.py
-web/                 Web Dashboard
-hardware/            PCB Designs & Schematics
-test/                Hardware Validation Tests
-docs/                Technical Documentation
-```
 
 ---
 
@@ -70,29 +52,7 @@ docs/                Technical Documentation
 | Gateway | C++ | gateway.cpp | WiFi/MQTT bridge, LoRa P2P receiver |
 | Gateway Slave | C++ | gateway-slave.cpp | LoRaWAN serial bridge |
 | Light Node | C++ | light-node.ino | LoRa P2P command receiver for LED control |
-| Backend Router | Python | loriot_router.py | Loriot webhook → MQTT publisher |
-| Dashboard | JavaScript | index.html | Real-time web monitoring interface |
-
----
-
-## Quick Start
-
-**Prerequisites:** Arduino IDE 1.8.19+, ESP32 Board Support 1.0.6+
-
-```bash
-# 1. Configure credentials
-cp config/secrets.h.example config/secrets.h
-# Edit with your WiFi/MQTT/LoRaWAN credentials
-
-# 2. Flash firmware using Arduino IDE
-#    Board: ESP32 DevKit | Speed: 115200
-#    See src/ for 5 target nodes
-
-# 3. Launch dashboard
-cd web/
-python -m http.server 8000
-# Open http://localhost:8000
-```
+| Backend Router | Python | loriot_router.py | 
 
 ---
 
@@ -107,24 +67,6 @@ Sensor Node ──LoRa P2P──→ Gateway ──WiFi──→ MQTT Broker ─�
 ```
 LoRaWAN Sensor ──LoRaWAN──→ Cibicom/Loriot ──Webhook──→ Router ──MQTT──→ Dashboard
 ```
-
----
-
-## Payload Format
-
-**13-byte Sensor Transmission (XOR-obfuscated):**
-
-| Byte | Field | Type | Range |
-|------|-------|------|-------|
-| 0 | Message Type | uint8 | 0x01 |
-| 1-2 | Temperature | int16 BE | -40…+85°C |
-| 3-4 | Humidity | uint16 BE | 0…100% |
-| 5-6 | Soil Moisture | uint16 BE | 0…100% |
-| 7-8 | Light Intensity | uint16 BE | 0…4095 lux |
-| 9 | Water Leak | uint8 | 0/1 (legacy) |
-| 10-11 | Battery | uint16 BE | 0…5000 mV |
-| 12 | Device ID | uint8 | 1-5 |
-
 ---
 
 ## Documentation
